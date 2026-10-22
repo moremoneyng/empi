@@ -13,8 +13,8 @@ export function DiscountPopup({ intervalMinutes = 7 }: DiscountPopupProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   useEffect(() => {
-    // Check if user has already dismissed this 5% discount announcement
-    const hasSeenDiscount = localStorage.getItem("empi_has_seen_5pc_discount");
+    // Check if user has already dismissed this bulk discount announcement
+    const hasSeenDiscount = localStorage.getItem("empi_has_seen_bulk_discount");
     if (!hasSeenDiscount) {
       // Delay slightly for smooth page render entry
       const timer = setTimeout(() => setIsOpen(true), 800);
@@ -24,7 +24,7 @@ export function DiscountPopup({ intervalMinutes = 7 }: DiscountPopupProps) {
 
   const handleClose = () => {
     setIsOpen(false);
-    localStorage.setItem("empi_has_seen_5pc_discount", "true");
+    localStorage.setItem("empi_has_seen_bulk_discount", "true");
   };
 
   if (!isOpen) return null;
@@ -62,14 +62,14 @@ export function DiscountPopup({ intervalMinutes = 7 }: DiscountPopupProps) {
           {/* Floating Discount Badge */}
           <div className="absolute top-4 left-4 flex items-center gap-1.5 bg-slate-950/80 backdrop-blur-md px-3 py-1 rounded-full border border-lime-500/30 text-lime-400 font-bold text-xs">
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Storewide Offer</span>
+            <span>Bulk Discounts</span>
           </div>
 
           {/* Large Discount Banner Badge */}
           <div className="absolute bottom-3 left-6 right-6 flex items-center justify-between">
             <div className="bg-lime-500 text-slate-950 px-4 py-2 rounded-2xl font-black text-2xl font-outfit shadow-lg shadow-lime-500/30 flex items-center gap-2">
               <Tag className="w-6 h-6" />
-              <span>5% OFF</span>
+              <span>UP TO 10% OFF</span>
             </div>
             <span className="text-xs font-semibold text-lime-300 bg-slate-950/80 px-3 py-1 rounded-full border border-lime-500/20">
               Applied at Checkout
@@ -81,10 +81,10 @@ export function DiscountPopup({ intervalMinutes = 7 }: DiscountPopupProps) {
         <div className="px-6 pt-4 pb-6 flex flex-col gap-4">
           <div>
             <h2 className="text-xl md:text-2xl font-black font-playfair text-white leading-tight mb-1 flex items-center gap-2">
-              Exclusive 5% Discount! 🎁
+              Buy More, Save More! 🎁
             </h2>
             <p className="text-slate-300 text-xs md:text-sm leading-relaxed">
-              Welcome to EMPI Costumes! Get an instant <strong className="text-lime-400 font-bold">5% discount</strong> on all purchased costumes and items across our store.
+              Welcome to EMPI Costumes! Buy <strong className="text-lime-400 font-bold">3 or more costumes</strong> in one order and get a discount on purchased items (excludes rentals).
             </p>
           </div>
 
@@ -92,15 +92,15 @@ export function DiscountPopup({ intervalMinutes = 7 }: DiscountPopupProps) {
           <div className="space-y-2 bg-slate-950/50 p-3.5 rounded-2xl border border-white/5 text-xs text-slate-300">
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="w-4 h-4 text-lime-400 shrink-0" />
-              <span>Valid on individual & single product purchases</span>
+              <span>3-5 costumes: 5% off</span>
             </div>
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="w-4 h-4 text-lime-400 shrink-0" />
-              <span>Calculated automatically at cart & checkout</span>
+              <span>6-9 costumes: 7% off</span>
             </div>
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="w-4 h-4 text-lime-400 shrink-0" />
-              <span>No promo code required</span>
+              <span>10+ costumes: 10% off</span>
             </div>
           </div>
 

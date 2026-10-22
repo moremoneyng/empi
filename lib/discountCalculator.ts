@@ -4,7 +4,10 @@
  */
 
 export const DISCOUNT_TIERS = [
-  { minQuantity: 1, discountPercentage: 5, label: "5% off" },
+  { minQuantity: 10, discountPercentage: 10, label: "10% off" },
+  { minQuantity: 6, discountPercentage: 7, label: "7% off" },
+  { minQuantity: 3, discountPercentage: 5, label: "5% off" },
+  { minQuantity: 1, discountPercentage: 0, label: "No discount" },
 ];
 
 // Default only - the live rate is admin-controlled (see lib/vat.ts and Settings.vatPercent)

@@ -75,6 +75,7 @@ export interface IUnifiedOrder extends Document {
   shippingCost?: number;
   cautionFee?: number;  // Caution fee for rental items (50% of rental subtotal)
   total: number;
+  paymentFee?: number;  // Flutterwave processing fee paid by the customer on top of total
   
   // ═══════════════════════════════════════════════════════════════════
   // PAYMENT
@@ -257,6 +258,7 @@ const unifiedOrderSchema = new Schema<IUnifiedOrder>(
       type: Number,
       required: true,
     },
+    paymentFee: Number,  // Flutterwave processing fee paid by the customer on top of total
     
     // Rental Schedule (for rental orders)
     rentalSchedule: {

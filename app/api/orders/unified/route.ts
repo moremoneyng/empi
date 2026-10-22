@@ -382,6 +382,7 @@ export async function POST(request: NextRequest) {
       ...(typeof body.vatPercent === 'number' && { vatPercent: body.vatPercent as number }),
       total: (body.total as number) || 0,
       cautionFee: (body.cautionFee as number) || 0,
+      ...(typeof body.paymentFee === 'number' && body.paymentFee > 0 && { paymentFee: body.paymentFee }),
 
       // Shipping
       shippingType: (body.shippingType as string) || 'standard',

@@ -11,6 +11,7 @@ import { ShoppingBag, AlertCircle, CreditCard, Upload, Camera, CheckCircle2, Lan
 import { getDiscountPercentage } from "@/lib/discountCalculator";
 import { calculateVat, formatVatPercent } from "@/lib/vat";
 import { useVatSettings } from "@/lib/hooks/useVatSettings";
+import { usePaymentFee } from "@/lib/hooks/usePaymentFee";
 import { validateCheckoutItemsModes } from "@/lib/utils/orderDiagnostics";
 
 
@@ -256,6 +257,16 @@ export default function CheckoutPage() {
     }
   };
 
+  // Processing fee the customer paid on top of the order total, saved when the payment started
+  const pendingPaymentFee = (reference: string): number => {
+    try {
+      const pending = JSON.parse(localStorage.getItem('empi_pending_payment') || 'null');
+      return pending?.reference === reference ? Number(pending.paymentFee) || 0 : 0;
+    } catch {
+      return 0;
+    }
+  };
+
   // Handle payment success - save order (invoice auto-generated via API)
   const handlePaymentSuccess = async (response: any) => {
     console.log("✅ Payment success handler called");
@@ -467,6 +478,7 @@ export default function CheckoutPage() {
           vatPercent: vatRate * 100,  // VAT % charged on goods only (not caution fee/delivery)
           cautionFee: (cautionFee || 0),  // CRITICAL: Save caution fee to top-level field
           total: totalAmount,
+          paymentFee: response.manual ? 0 : pendingPaymentFee(response.reference),  // Flutterwave fee paid by the customer, on top of total
           pricing: {
             subtotal: goodsSubtotal,  // ← Use goodsSubtotal here too
             buySubtotal: buySubtotal,
@@ -621,83 +633,6 @@ export default function CheckoutPage() {
     }
   };
 
-  if (!isHydrated) return null;
-
-  // ===== PAYMENT SUCCESS - Show success message =====
-  if (paymentSuccessful) {
-    return (
-      <div className="min-h-screen flex flex-col">
-        <Header />
-        <main className="flex-1 max-w-2xl mx-auto px-4 py-12 w-full">
-          <div className="bg-white rounded-lg shadow-md border border-green-200 p-12">
-            <div className="text-center">
-              {/* Success Icon */}
-              <div className="mb-6 flex justify-center">
-                <div className="h-20 w-20 bg-green-100 rounded-full flex items-center justify-center">
-                  <span className="text-5xl">📦</span>
-                </div>
-              </div>
-
-              {/* Title */}
-              <h1 className="text-3xl font-bold text-gray-900 mb-2">Track Your Order</h1>
-
-              {/* Description */}
-              <p className="text-gray-600 text-lg mb-8">
-                Check messages on your product card and visit the dashboard to track your order progress in real-time
-              </p>
-
-              {/* Buttons */}
-              <div className="space-y-3 max-w-sm mx-auto">
-                <Link href="/dashboard?tab=orders" className="block w-full bg-gradient-to-r from-lime-600 to-green-600 hover:from-lime-700 hover:to-green-700 text-white px-6 py-3 rounded-lg font-semibold transition shadow-md hover:shadow-lg">
-                  Go to Dashboard Orders
-                </Link>
-                <Link href="/" className="block w-full bg-gray-100 hover:bg-gray-200 text-gray-900 px-6 py-3 rounded-lg font-semibold transition">
-                  Continue Shopping
-                </Link>
-              </div>
-
-              {/* Reference Number */}
-              {successReference && (
-                <div className="mt-8 pt-8 border-t border-gray-200">
-                  <p className="text-sm text-gray-600 mb-1">Order Reference</p>
-                  <p className="text-xl font-semibold text-gray-900">{successReference}</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </main>
-        <Footer />
-      </div>
-    );
-  }
-
-  // ===== EMPTY CART - But allow if custom order quote exists or payment was successful =====
-  if (items.length === 0 && !customQuote && !paymentSuccessful) {
-    return (
-      <div className="min-h-screen flex flex-col">
-        <Header />
-        <main className="flex-1 max-w-4xl mx-auto px-4 py-12 w-full">
-          <div className="bg-white rounded-lg shadow-md border border-gray-200 p-12">
-            <div className="text-center mb-8">
-              <ShoppingBag className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-              <h1 className="text-3xl font-bold mb-2">Your cart is empty</h1>
-              <p className="text-gray-600 mb-8">Add items to proceed with checkout.</p>
-              <div className="space-y-3 max-w-sm mx-auto">
-                <Link href="/" className="block w-full bg-lime-600 hover:bg-lime-700 text-white px-6 py-3 rounded-lg font-semibold transition">
-                  Continue Shopping
-                </Link>
-                <Link href="/dashboard?tab=invoices" className="block w-full bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white px-6 py-3 rounded-lg font-semibold transition shadow-md hover:shadow-lg">
-                  View Invoices
-                </Link>
-              </div>
-            </div>
-          </div>
-        </main>
-        <Footer />
-      </div>
-    );
-  }
-
   // ===== CALCULATE TOTALS =====
   let shippingCost, taxEstimate, totalAmount, displayItems, displayTotal, displaySubtotal, discountAmount = 0, discountPercentage = 0, displaySubtotalAfterDiscount = 0;
 
@@ -795,6 +730,87 @@ export default function CheckoutPage() {
       displaySubtotalAfterDiscount,
       displayTotal,
     });
+  }
+
+  // Customers pay Flutterwave's processing fee on online payments (not on bank transfers)
+  const { fee: paymentFee, loading: paymentFeeLoading } = usePaymentFee(displayTotal, paymentMethod === 'paystack');
+  const payableTotal = Math.round((displayTotal + paymentFee) * 100) / 100;
+
+  if (!isHydrated) return null;
+
+  // ===== PAYMENT SUCCESS - Show success message =====
+  if (paymentSuccessful) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        <Header />
+        <main className="flex-1 max-w-2xl mx-auto px-4 py-12 w-full">
+          <div className="bg-white rounded-lg shadow-md border border-green-200 p-12">
+            <div className="text-center">
+              {/* Success Icon */}
+              <div className="mb-6 flex justify-center">
+                <div className="h-20 w-20 bg-green-100 rounded-full flex items-center justify-center">
+                  <span className="text-5xl">📦</span>
+                </div>
+              </div>
+
+              {/* Title */}
+              <h1 className="text-3xl font-bold text-gray-900 mb-2">Track Your Order</h1>
+
+              {/* Description */}
+              <p className="text-gray-600 text-lg mb-8">
+                Check messages on your product card and visit the dashboard to track your order progress in real-time
+              </p>
+
+              {/* Buttons */}
+              <div className="space-y-3 max-w-sm mx-auto">
+                <Link href="/dashboard?tab=orders" className="block w-full bg-gradient-to-r from-lime-600 to-green-600 hover:from-lime-700 hover:to-green-700 text-white px-6 py-3 rounded-lg font-semibold transition shadow-md hover:shadow-lg">
+                  Go to Dashboard Orders
+                </Link>
+                <Link href="/" className="block w-full bg-gray-100 hover:bg-gray-200 text-gray-900 px-6 py-3 rounded-lg font-semibold transition">
+                  Continue Shopping
+                </Link>
+              </div>
+
+              {/* Reference Number */}
+              {successReference && (
+                <div className="mt-8 pt-8 border-t border-gray-200">
+                  <p className="text-sm text-gray-600 mb-1">Order Reference</p>
+                  <p className="text-xl font-semibold text-gray-900">{successReference}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    );
+  }
+
+  // ===== EMPTY CART - But allow if custom order quote exists or payment was successful =====
+  if (items.length === 0 && !customQuote && !paymentSuccessful) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        <Header />
+        <main className="flex-1 max-w-4xl mx-auto px-4 py-12 w-full">
+          <div className="bg-white rounded-lg shadow-md border border-gray-200 p-12">
+            <div className="text-center mb-8">
+              <ShoppingBag className="h-16 w-16 text-gray-400 mx-auto mb-4" />
+              <h1 className="text-3xl font-bold mb-2">Your cart is empty</h1>
+              <p className="text-gray-600 mb-8">Add items to proceed with checkout.</p>
+              <div className="space-y-3 max-w-sm mx-auto">
+                <Link href="/" className="block w-full bg-lime-600 hover:bg-lime-700 text-white px-6 py-3 rounded-lg font-semibold transition">
+                  Continue Shopping
+                </Link>
+                <Link href="/dashboard?tab=invoices" className="block w-full bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white px-6 py-3 rounded-lg font-semibold transition shadow-md hover:shadow-lg">
+                  View Invoices
+                </Link>
+              </div>
+            </div>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    );
   }
 
   // ===== CHECKOUT FORM =====
@@ -1013,9 +1029,18 @@ export default function CheckoutPage() {
                   <span className="font-semibold text-gray-900">₦{Math.round(taxEstimate).toLocaleString()}</span>
                 </div>
                 
+                {paymentMethod === 'paystack' && (
+                  <div className="flex justify-between">
+                    <span>Payment Processing Fee</span>
+                    <span className="font-semibold text-gray-900">
+                      {paymentFeeLoading ? 'Calculating...' : `₦${paymentFee.toLocaleString()}`}
+                    </span>
+                  </div>
+                )}
+
                 <div className="flex justify-between text-base font-bold pt-3 border-t border-gray-100 text-gray-900">
                   <span>Total Amount</span>
-                  <span className="text-purple-600">₦{displayTotal.toLocaleString()}</span>
+                  <span className="text-purple-600">₦{payableTotal.toLocaleString()}</span>
                 </div>
               </div>
             </div>
@@ -1080,21 +1105,23 @@ export default function CheckoutPage() {
                     setOrderError("Online payment service is currently undergoing maintenance. Please use Bank Transfer.");
                     return;
                   }
+                  if (paymentFeeLoading) return;
 
                   setIsProcessing(true);
                   setOrderError(null);
 
                   try {
                     const ref = `EMPI-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-                    const amountInKobo = Math.round(displayTotal * 100);
+                    const amountInKobo = Math.round(payableTotal * 100);
 
-                    console.log("💳 Payment Details:", { ref, amount: displayTotal, email: customerInfo.email });
+                    console.log("💳 Payment Details:", { ref, amount: payableTotal, paymentFee, email: customerInfo.email });
 
                     // Store payment info in localStorage
                     localStorage.setItem('empi_pending_payment', JSON.stringify({
                       reference: ref,
                       email: customerInfo.email,
                       amount: amountInKobo,
+                      paymentFee,
                       timestamp: Date.now()
                     }));
 
@@ -1106,7 +1133,7 @@ export default function CheckoutPage() {
                         const handler = (window as any).FlutterwaveCheckout({
                           public_key: process.env.NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY,
                           tx_ref: ref,
-                          amount: displayTotal, // Flutterwave expects Naira amount
+                          amount: payableTotal, // Flutterwave expects Naira amount
                           currency: "NGN",
                           payment_options: "card, banktransfer, ussd",
                           customer: {
@@ -1182,7 +1209,7 @@ export default function CheckoutPage() {
                     setOrderError("Failed to initialize payment. Please try again.");
                   }
                 }}
-                disabled={isProcessing}
+                disabled={isProcessing || (paymentMethod === 'paystack' && paymentFeeLoading)}
                 className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-bold py-3.5 px-6 rounded-xl transition shadow-md shadow-green-600/10 flex items-center justify-center gap-2"
               >
                 {isProcessing ? (
@@ -1191,7 +1218,7 @@ export default function CheckoutPage() {
                     Processing...
                   </>
                 ) : (
-                  `Pay ₦${displayTotal.toLocaleString()}`
+                  `Pay ₦${payableTotal.toLocaleString()}`
                 )}
               </button>
             </div>
