@@ -105,6 +105,8 @@ export async function POST(request: NextRequest) {
       subtotal: subtotal || 0,
       // Online orders have no shipping on invoices; manual invoices may carry an untaxed delivery fee
       shippingCost: type === 'manual' ? Math.max(0, Number(body.shippingCost) || 0) : 0,
+      // Refundable deposit, kept out of the VAT-able subtotal
+      cautionFee: Math.max(0, Number(body.cautionFee) || 0),
       taxAmount: taxAmount || 0,
       totalAmount: totalAmount || 0,
       items: items || [],

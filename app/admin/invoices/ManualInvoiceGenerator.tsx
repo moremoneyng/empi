@@ -54,6 +54,7 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
     currency: "NGN",
     taxRate: null as number | null, // null = use the store VAT rate until the admin types one
     deliveryFee: 0,
+    cautionFee: 0,
   });
   const storeVat = useVatSettings();
   const taxRate = formData.taxRate ?? storeVat.vatRate * 100;
@@ -84,6 +85,7 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
         currency: invoiceToEdit.currency || "NGN",
         taxRate: invoiceToEdit.taxRate ?? 7.5,
         deliveryFee: invoiceToEdit.shippingCost || 0,
+        cautionFee: invoiceToEdit.cautionFee || 0,
       });
 
       setItems(
@@ -188,10 +190,18 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
     }));
   };
 
-  const subtotal = items.reduce((sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.price) || 0), 0);
-  // VAT on the items only - the delivery/logistics fee is never taxed
+  const lineTotal = (item: InvoiceItem) => (Number(item.quantity) || 0) * (Number(item.price) || 0);
+  // A line typed as "Caution fee" is a refundable deposit, not a sale: it is moved out of the
+  // items and into the caution fee so it never attracts VAT.
+  const isCautionItem = (item: InvoiceItem) => /caution/i.test(item.name);
+  const productItems = items.filter(item => !isCautionItem(item));
+  const cautionFee =
+    (formData.cautionFee || 0) +
+    items.filter(isCautionItem).reduce((sum, item) => sum + lineTotal(item), 0);
+  const subtotal = productItems.reduce((sum, item) => sum + lineTotal(item), 0);
+  // VAT on the products only - caution fee and delivery/logistics are never taxed
   const taxAmount = subtotal * (taxRate / 100);
-  const totalAmount = subtotal + taxAmount + (formData.deliveryFee || 0);
+  const totalAmount = subtotal + taxAmount + cautionFee + (formData.deliveryFee || 0);
   const currency = CURRENCIES.find(c => c.code === formData.currency)!;
 
   const handleShareAction = async (action: "whatsapp" | "download" | "email" | "save") => {
@@ -221,7 +231,7 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
       taxRate,
       type: 'manual',
       status: invoiceToEdit ? invoiceToEdit.status : 'sent',
-      items: items.map(item => ({
+      items: productItems.map(item => ({
         id: item.id,
         name: item.name,
         quantity: Number(item.quantity) || 1,
@@ -230,6 +240,7 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
       })),
       subtotal,
       taxAmount,
+      cautionFee,
       shippingCost: formData.deliveryFee || 0,
       totalAmount,
     };
@@ -325,6 +336,7 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
           currency: "NGN",
           taxRate: null,
           deliveryFee: 0,
+          cautionFee: 0,
         });
         setItems([]);
         setTimeout(() => setSuccessMessage(""), 4000);
@@ -458,6 +470,18 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
                   />
                 </div>
                 <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Caution Fee (refundable, no VAT)</label>
+                  <input
+                    type="number"
+                    value={formData.cautionFee || ""}
+                    onChange={(e) => setFormData({ ...formData, cautionFee: Math.max(0, parseFloat(e.target.value) || 0) })}
+                    placeholder="0"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-lime-500"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+                <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-1">Due Date</label>
                   <input
                     type="date"
@@ -554,7 +578,7 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
                             />
                           </div>
                           <div className="w-24 text-right mb-2">
-                            <p className="text-xs text-gray-600 mb-1">Total</p>
+                            <p className="text-xs text-gray-600 mb-1">{isCautionItem(item) ? "Caution (no VAT)" : "Total"}</p>
                             <p className="font-semibold text-gray-900">{currency.symbol}{((Number(item.quantity) || 0) * (Number(item.price) || 0)).toFixed(2)}</p>
                           </div>
                           <button
@@ -602,6 +626,12 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
                 <span className="text-gray-600">Tax ({taxRate}%):</span>
                 <span className="font-semibold">{currency.symbol}{taxAmount.toFixed(2)}</span>
               </div>
+              {cautionFee > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Caution Fee (refundable, no VAT):</span>
+                  <span className="font-semibold">{currency.symbol}{cautionFee.toFixed(2)}</span>
+                </div>
+              )}
               {formData.deliveryFee > 0 && (
                 <div className="flex justify-between">
                   <span className="text-gray-600">Delivery / Logistics (no VAT):</span>
@@ -674,7 +704,7 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
                   customerEmail: formData.customerEmail || 'customer@email.com',
                   customerPhone: formData.customerPhone || 'Phone',
                   orderNumber: formData.orderNumber || '',
-                  items: items.map(item => ({
+                  items: productItems.map(item => ({
                     name: item.name,
                     quantity: Number(item.quantity) || 0,
                     price: Number(item.price) || 0,
@@ -683,6 +713,7 @@ export function ManualInvoiceGenerator({ invoiceToEdit, onCancelEdit }: ManualIn
                   subtotal,
                   taxAmount,
                   taxRate,
+                  cautionFee,
                   totalAmount,
                   shippingCost: formData.deliveryFee || 0,
                   currency: formData.currency,
