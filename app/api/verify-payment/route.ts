@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getSiteUrl } from '@/lib/siteUrl';
 import connectDB from '@/lib/mongodb';
 import Order from '@/lib/models/Order';
 import CustomOrder from '@/lib/models/CustomOrder';
@@ -327,7 +328,7 @@ export async function GET(request: NextRequest) {
         // Send admin and buyer payment notification messages
         try {
           console.log('[verify-payment] 📨 Sending payment notification messages (admin + buyer)');
-          const baseUrl = process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
+          const baseUrl = getSiteUrl();
           
           const notificationRes = await fetch(`${baseUrl}/api/send-payment-notification`, {
             method: 'POST',

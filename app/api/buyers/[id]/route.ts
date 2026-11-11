@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getBuyerFromRequest } from '@/lib/buyerAuth';
+import { getAdminFromRequest } from '@/lib/adminAuth';
 import connectDB from "@/lib/mongodb";
 import Buyer from "@/lib/models/Buyer";
 import { serializeDoc } from "@/lib/serializer";
+
+/** Never send passwords or login sessions to the browser */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function publicBuyer(buyer: any) {
+  const data = serializeDoc(buyer);
+  for (const key of ["password", "passwordHash", "sessionToken", "sessionExpiry", "resetToken", "resetTokenExpiry", "otp", "otpExpiry"]) {
+    delete data[key];
+  }
+  return data;
+}
 
 /**
  * GET /api/buyers/[id]
@@ -25,6 +37,17 @@ export async function GET(
       );
     }
 
+    // Admins can look anyone up; a customer can only read their own profile
+    const [sessionBuyer, admin] = await Promise.all([getBuyerFromRequest(request), getAdminFromRequest(request)]);
+    if (!admin) {
+      const isSelf =
+        sessionBuyer &&
+        (queryType === 'email'
+          ? String(sessionBuyer.email).toLowerCase() === id.toLowerCase()
+          : String(sessionBuyer._id) === String(id));
+      if (!isSelf) return NextResponse.json({ error: "Not authorized" }, { status: 401 });
+    }
+
     let buyer;
 
     if (queryType === 'email') {
@@ -42,9 +65,7 @@ export async function GET(
       );
     }
 
-    // Serialize and remove password
-    const buyerData = serializeDoc(buyer);
-    delete (buyerData as any).password;
+    const buyerData = publicBuyer(buyer);
 
     return NextResponse.json(buyerData, { status: 200 });
   } catch (error: any) {
@@ -80,6 +101,12 @@ export async function PATCH(
       );
     }
 
+    // Only the signed-in customer themselves (or an admin) may change a profile
+    const [sessionBuyer, admin] = await Promise.all([getBuyerFromRequest(request), getAdminFromRequest(request)]);
+    if (!admin && (!sessionBuyer || String(sessionBuyer._id) !== String(id))) {
+      return NextResponse.json({ error: "Not authorized" }, { status: 401 });
+    }
+
     // Find buyer
     const buyer = await Buyer.findById(id);
     if (!buyer) {
@@ -101,9 +128,7 @@ export async function PATCH(
 
     console.log(`✅ Buyer profile updated: ${buyer.email}`);
 
-    // Serialize and remove password
-    const buyerData = serializeDoc(buyer);
-    delete (buyerData as any).password;
+    const buyerData = publicBuyer(buyer);
 
     return NextResponse.json(buyerData, { status: 200 });
   } catch (error: any) {

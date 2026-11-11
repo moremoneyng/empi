@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ChevronDown, FileText, Loader2, RotateCcw, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, ChevronDown, CreditCard, FileText, Loader2, RotateCcw, Trash2 } from 'lucide-react';
 
 interface UnrecordedInvoice {
   _id: string;
@@ -25,12 +25,30 @@ interface DeletedOrder {
   deletedAt?: string;
 }
 
+interface UnrecordedPayment {
+  reference: string;
+  transactionId: number;
+  amount: number;
+  fee: number;
+  suggestedOrderTotal: number;
+  paidAt: string;
+  paymentType?: string;
+  customerName: string;
+  email: string;
+  phone: string;
+  hasSavedCheckout: boolean;
+  lastError?: string;
+}
+
 const naira = (n = 0) => `₦${Math.round(n).toLocaleString('en-NG')}`;
 const shortDate = (d?: string) => (d ? new Date(d).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+const dateTime = (d?: string) =>
+  d ? new Date(d).toLocaleString('en-NG', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '—';
 
 /**
  * Surfaces sales that are missing from the Orders list:
  *  - manual invoices that were never recorded as orders (one click to record them)
+ *  - online (Flutterwave) payments that have no order (record them as orders)
  *  - orders that were removed from the dashboard (restore any of them)
  * Nothing here deletes data; recording only adds orders and restoring only un-hides them.
  */
@@ -42,6 +60,62 @@ export function OrderRecoveryPanel({ onChanged }: { onChanged: () => void }) {
   const [showDeleted, setShowDeleted] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [payments, setPayments] = useState<UnrecordedPayment[]>([]);
+  const [paymentsError, setPaymentsError] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, { items: string; total: string }>>({});
+
+  // The parent passes a new callback every render - keep the latest without re-running effects
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => {
+    onChangedRef.current = onChanged;
+  }, [onChanged]);
+
+  // Checking Flutterwave can take a few seconds, so it loads separately from the rest
+  const loadPayments = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/orders/unrecorded-payments', { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Could not check online payments');
+      setPayments(data.unrecorded || []);
+      setPaymentsError(null);
+      if (data.created?.length) {
+        setMessage({ type: 'success', text: `✅ ${data.created.length} paid online order(s) were missing and have now been added.` });
+        onChangedRef.current();
+      }
+    } catch (err) {
+      setPaymentsError(err instanceof Error ? err.message : 'Could not check online payments');
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPayments();
+  }, [loadPayments]);
+
+  const recordPayment = async (p: UnrecordedPayment) => {
+    const draft = drafts[p.reference] || { items: '', total: String(p.suggestedOrderTotal) };
+    if (!draft.items.trim()) {
+      setMessage({ type: 'error', text: 'Describe what the customer ordered (e.g. "Saffron x2 - rental, 1 day") before recording.' });
+      return;
+    }
+    setBusy(p.reference);
+    setMessage(null);
+    try {
+      const res = await fetch('/api/admin/orders/unrecorded-payments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reference: p.reference, itemsDescription: draft.items, orderTotal: Number(draft.total) }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to record payment');
+      setMessage({ type: 'success', text: `✅ Payment from ${p.customerName || p.email} recorded as order ${data.orderNumber}.` });
+      await loadPayments();
+      onChanged();
+    } catch (err) {
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Failed to record payment' });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -125,7 +199,7 @@ export function OrderRecoveryPanel({ onChanged }: { onChanged: () => void }) {
     }
   };
 
-  if (invoices.length === 0 && deleted.length === 0 && !message) return null;
+  if (invoices.length === 0 && deleted.length === 0 && payments.length === 0 && !paymentsError && !message) return null;
 
   const unrecordedTotal = invoices.reduce((sum, i) => sum + (i.totalAmount || 0), 0);
   const selectedTotal = invoices.filter((i) => selected.has(i._id)).reduce((sum, i) => sum + (i.totalAmount || 0), 0);
@@ -135,6 +209,91 @@ export function OrderRecoveryPanel({ onChanged }: { onChanged: () => void }) {
       {message && (
         <div className={`p-3 rounded-xl text-sm font-semibold border ${message.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
           {message.text}
+        </div>
+      )}
+
+      {payments.length > 0 && (
+        <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <CreditCard className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="font-bold text-gray-900">
+                {payments.length} online payment{payments.length === 1 ? '' : 's'} (
+                {naira(payments.reduce((sum, p) => sum + p.amount, 0))}) received with no order
+              </p>
+              <p className="text-xs text-gray-600 mt-0.5">
+                Flutterwave confirms these customers paid, but their order was never saved. Contact them to confirm what they
+                ordered, then record it. Recording adds an order marked paid and emails the customer their invoice.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {payments.map((p) => {
+              const draft = drafts[p.reference] || { items: '', total: String(p.suggestedOrderTotal) };
+              const setDraft = (patch: Partial<{ items: string; total: string }>) =>
+                setDrafts((prev) => ({ ...prev, [p.reference]: { ...draft, ...patch } }));
+              return (
+                <div key={p.reference} className="bg-white rounded-xl border border-red-200 p-3 space-y-2">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-gray-900">{p.customerName || 'Customer'}</p>
+                      <p className="text-xs text-gray-600 break-all">
+                        {p.email}
+                        {p.phone && (
+                          <>
+                            {' · '}
+                            <a href={`tel:${p.phone}`} className="text-blue-700 font-semibold">{p.phone}</a>
+                          </>
+                        )}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5 break-all">
+                        Paid {dateTime(p.paidAt)} · {p.paymentType?.replace('_', ' ') || 'online'} · Ref {p.reference}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-base font-bold text-gray-900">{naira(p.amount)}</p>
+                      {p.fee > 0 && <p className="text-[11px] text-gray-500">incl. {naira(p.fee)} processing fee</p>}
+                    </div>
+                  </div>
+                  {p.lastError && <p className="text-xs text-red-700">Auto-recovery note: {p.lastError}</p>}
+                  <div className="grid grid-cols-1 sm:grid-cols-[1fr_140px] gap-2">
+                    <input
+                      type="text"
+                      value={draft.items}
+                      onChange={(e) => setDraft({ items: e.target.value })}
+                      placeholder='What did they order? e.g. "Saffron x2 - rental, 1 day"'
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-300"
+                    />
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={draft.total}
+                      onChange={(e) => setDraft({ total: e.target.value })}
+                      aria-label="Order total excluding processing fee"
+                      title="Order total excluding the processing fee"
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-300"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => recordPayment(p)}
+                    disabled={busy !== null}
+                    className="w-full sm:w-auto flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-bold disabled:opacity-50"
+                  >
+                    {busy === p.reference && <Loader2 className="h-4 w-4 animate-spin" />}
+                    Record as paid order
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {paymentsError && (
+        <div className="p-3 rounded-xl text-xs font-semibold border bg-amber-50 text-amber-800 border-amber-200">
+          Couldn&apos;t check Flutterwave for unrecorded online payments: {paymentsError}
         </div>
       )}
 

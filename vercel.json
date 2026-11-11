@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/vat-rollover",
       "schedule": "0 0 21 * *"
+    },
+    {
+      "path": "/api/cron/reconcile-payments",
+      "schedule": "0 6 * * *"
     }
   ]
 }

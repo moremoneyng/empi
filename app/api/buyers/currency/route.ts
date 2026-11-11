@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import connectDB from '@/lib/mongodb';
 import Buyer from '@/lib/models/Buyer';
+import { getBuyerFromRequest } from '@/lib/buyerAuth';
 
 // Update buyer's preferred currency
 export async function PUT(req: NextRequest) {
@@ -14,6 +15,11 @@ export async function PUT(req: NextRequest) {
         { error: 'Missing buyerId or currency' },
         { status: 400 }
       );
+    }
+
+    const sessionBuyer = await getBuyerFromRequest(req);
+    if (!sessionBuyer || String(sessionBuyer._id) !== String(buyerId)) {
+      return NextResponse.json({ error: 'Not authorized' }, { status: 401 });
     }
 
     const buyer = await Buyer.findByIdAndUpdate(

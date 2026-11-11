@@ -1,3 +1,4 @@
+import { requireAdmin } from '@/lib/adminAuth';
 import { NextRequest, NextResponse } from 'next/server';
 import UnifiedOrder from '@/lib/models/UnifiedOrder';
 import Order from '@/lib/models/Order';
@@ -291,6 +292,9 @@ function getMonthlyTaxEstimates(taxBreakdown: TaxBreakdown): MonthlyTaxBreakdown
 }
 
 export async function GET(request: NextRequest) {
+  const unauthorized = await requireAdmin(request);
+  if (unauthorized) return unauthorized;
+
   try {
     await connectDB();
 

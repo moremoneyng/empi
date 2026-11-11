@@ -6,8 +6,10 @@ import { calculateVat } from '@/lib/vat';
 import { getAdminFromRequest } from '@/lib/adminAuth';
 import { getBuyerFromRequest } from '@/lib/buyerAuth';
 import { checkPaymentForOrder } from '@/lib/paymentVerification';
-import { createInvoiceFromOrder } from '@/lib/createInvoiceFromOrder';
 import { logOrderModeDiagnostics } from '@/lib/utils/orderDiagnostics';
+import CheckoutIntent from '@/lib/models/CheckoutIntent';
+import { fulfillCheckout } from '@/lib/orders/onlinePayments';
+import { buildOrderDocument, generateOrderNumber, runPostCreateTasks } from '@/lib/orders/createOrder';
 import { v2 as cloudinary } from 'cloudinary';
 
 // Configure cloudinary
@@ -212,6 +214,28 @@ export async function POST(request: NextRequest) {
           { status: 200 }
         );
       }
+
+      // Online checkout with a cart saved on the server: create the order through the single
+      // locked path shared with the Flutterwave webhook and reconciliation, so it happens exactly once.
+      if (idempotencyKey.startsWith('EMPI-') && (await CheckoutIntent.exists({ reference: idempotencyKey }))) {
+        const result = await fulfillCheckout(idempotencyKey);
+        if (result.status === 'created' || result.status === 'exists') {
+          return NextResponse.json(
+            {
+              success: true,
+              orderId: result.orderId,
+              orderNumber: result.orderNumber,
+              invoice: result.status === 'created' ? result.invoice || null : { invoiceNumber: 'N/A' },
+            },
+            { status: result.status === 'created' ? 201 : 200 }
+          );
+        }
+        // Payment not confirmed yet (or being processed elsewhere) - the caller keeps polling
+        return NextResponse.json(
+          { error: 'Payment not confirmed yet. Your order will appear as soon as it is.', status: result.status },
+          { status: 409 }
+        );
+      }
     }
 
     let body: Record<string, unknown> = {};
@@ -315,10 +339,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Generate unique order number
-    const timestamp = Date.now();
-    const random = Math.floor(Math.random() * 10000);
-    const orderNumber = `ORD-${timestamp}-${random}`;
+    const orderNumber = generateOrderNumber();
 
     // Paid status is decided on the server, never by the browser: admins may set it,
     // otherwise Flutterwave must confirm the payment covers this order's total.
@@ -335,86 +356,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Prepare order data - ensure all fields are properly mapped
-    const orderDataToSave = {
-      // Basic Info
+    // Prepare order data (shared with webhook / reconciliation so every path saves the same fields)
+    const orderDataToSave = buildOrderDocument(body, {
       orderNumber,
-      orderType,
-
-      // Customer Info
-      firstName: (body.firstName as string) || '',
-      lastName: (body.lastName as string) || '',
-      email: (body.email as string) || '',
-      phone: (body.phone as string) || '',
-      address: (body.address as string) || undefined,
-      city: (body.city as string) || '',
-      state: (body.state as string) || undefined,
-      zipCode: (body.zipCode as string) || undefined,
-      buyerId: (body.buyerId as string) || undefined,
-      country: (body.country as string) || 'Nigeria',
-
-      // Items (empty for custom orders, will be populated when admin adds them)
-      // CRITICAL FIX: Map incoming 'price' field to 'unitPrice' for schema compatibility
-      items: (body.items as Record<string, unknown>[])?.map((item: Record<string, unknown>) => ({
-        name: item.name || '',
-        quantity: (item.quantity as number) || 1,
-        unitPrice: (item.unitPrice || item.price || 0) as number, // ← Map price → unitPrice
-        productId: item.productId as string | undefined,
-        selectedSize: item.selectedSize as string | undefined,
-        selectedColor: item.selectedColor as string | undefined,
-        imageUrl: (item.imageUrl || item.image) as string | undefined,
-        image: item.image as string | undefined,
-        mode: item.mode as string || 'buy',
-      })) || [],
-
-      // Custom Order Specific
-      description: (body.description as string) || undefined,
-      designUrls: [], // Will be filled by background task if images exist
-      requiredQuantity: (body.requiredQuantity as number) || (body.quantity as number) || 1,
-
-      // Pricing
-      subtotal: (body.subtotal as number) || 0,
-      // CRITICAL: Include discount fields for regular orders
-      discountPercentage: (body.discountPercentage as number) || 0,
-      discountAmount: (body.discountAmount as number) || 0,
-      subtotalAfterDiscount: (body.subtotalAfterDiscount as number) || (body.subtotal as number) || 0,
-      vat: (body.vat as number) || 0,
-      ...(typeof body.vatPercent === 'number' && { vatPercent: body.vatPercent as number }),
-      total: (body.total as number) || 0,
-      cautionFee: (body.cautionFee as number) || 0,
-      ...(typeof body.paymentFee === 'number' && body.paymentFee > 0 && { paymentFee: body.paymentFee }),
-
-      // Shipping
-      shippingType: (body.shippingType as string) || 'standard',
-      shippingCost: (body.shippingCost as number) || 0,
-
-      // Rental Schedule (if rental items exist)
-      rentalSchedule: body.rentalSchedule ? {
-        pickupDate: (body.rentalSchedule as any).pickupDate,
-        pickupTime: (body.rentalSchedule as any).pickupTime,
-        returnDate: (body.rentalSchedule as any).returnDate,
-        pickupLocation: (body.rentalSchedule as any).pickupLocation,
-        rentalDays: (body.rentalSchedule as any).rentalDays,
-      } : undefined,
-      rentalPolicyAgreed: (body as any).rentalPolicyAgreed || false,
-
-      // Payment
-      paymentVerified,
-      ...(paymentVerified && { paymentVerifiedAt: new Date() }),
+      orderType: orderType as string,
       paymentReference,
-      paymentMethod: (body.paymentMethod as string) || 'paystack',
-      paymentProofUrl: (body.paymentProofUrl as string) || undefined,
-
-      // Status & Logistics
-      status: 'pending',
-      currentHandler: 'production',
-
-      // Timeline
-      deliveryDate: body.deliveryDate ? new Date(body.deliveryDate as string) : undefined,
-
-      // Metadata
-      isActive: true,
-    };
+      paymentVerified,
+    });
 
     // Remove designImages from order data (they're not a model field, we'll process them separately)
     const designImages = (body.designImages as File[]) || [];
@@ -483,91 +431,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // AUTO-GENERATE INVOICE for all paid orders, or send confirmation for manual orders
-    let invoiceData = null;
-    if (newOrder.paymentVerified) {
-      try {
-        console.log('[Unified Orders API] 📧 Auto-generating invoice...');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        invoiceData = await createInvoiceFromOrder(newOrder as any);
-        if (invoiceData.success) {
-          console.log('[Unified Orders API] ✅ Invoice created and sent:', invoiceData.invoiceNumber);
-        }
-      } catch (invoiceError) {
-        console.error('[Unified Orders API] ⚠️ Invoice generation failed (non-blocking):', invoiceError);
-        // Don't fail the order creation if invoice generation fails
-      }
-    } else {
-      // Send Order Placed Email for manual orders
-      try {
-        console.log('[Unified Orders API] 📧 Sending manual order confirmation email...');
-        const baseUrl = process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
-        await fetch(`${baseUrl}/api/notifications/user-status-change`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'order-placed',
-            orderNumber: newOrder.orderNumber,
-            orderId: newOrder._id,
-            email: newOrder.email,
-            name: `${newOrder.firstName} ${newOrder.lastName}`,
-            amount: newOrder.total || 0,
-            details: {
-              items: newOrder.items,
-              pricing: {
-                subtotal: newOrder.subtotal,
-                discountPercentage: newOrder.discountPercentage,
-                discountAmount: newOrder.discountAmount,
-                cautionFee: newOrder.cautionFee,
-                vat: newOrder.vat,
-                total: newOrder.total,
-              }
-            }
-          }),
-        }).catch(err => {
-          console.error('[Unified Orders API] ⚠️ Failed to send user order-placed notification:', err);
-        });
-      } catch (userNotifError) {
-        console.error('[Unified Orders API] ⚠️ User order placement notification error (non-blocking):', userNotifError);
-      }
-    }
-
-    // 🔔 Send ADMIN NOTIFICATION for new order (non-blocking)
-    try {
-      console.log('[Unified Orders API] 📢 Sending admin notification for new order...');
-      const baseUrl = process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
-      await fetch(`${baseUrl}/api/notifications/admin-order-placed`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderNumber: newOrder.orderNumber,
-          orderId: newOrder._id,
-          buyerName: `${newOrder.firstName} ${newOrder.lastName}`,
-          buyerEmail: newOrder.email,
-          buyerPhone: newOrder.phone,
-          shippingAddress: newOrder.address,
-          shippingCity: newOrder.city,
-          shippingState: newOrder.state,
-          shippingCountry: newOrder.country,
-          amount: newOrder.total || 0,
-          orderType: orderType,
-          items: newOrder.items,
-          pricing: {
-            subtotal: newOrder.subtotal,
-            discountPercentage: newOrder.discountPercentage,
-            discountAmount: newOrder.discountAmount,
-            cautionFee: newOrder.cautionFee,
-            vat: newOrder.vat,
-            total: newOrder.total,
-          }
-        }),
-      }).catch(err => {
-        console.error('[Unified Orders API] ⚠️ Failed to send admin notification:', err);
-        // Non-blocking - don't fail the order creation
-      });
-    } catch (notifError) {
-      console.error('[Unified Orders API] ⚠️ Admin notification error (non-blocking):', notifError);
-    }
+    // Invoice + emails for paid orders, "order placed" email otherwise, and the admin notification
+    const invoiceData = await runPostCreateTasks(newOrder, orderType as string);
 
     return NextResponse.json(
       {

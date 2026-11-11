@@ -47,6 +47,8 @@ export default function CheckoutPage() {
   const [orderError, setOrderError] = useState<string | null>(null);
   const [customQuote, setCustomQuote] = useState<any>(null);
   const [paymentSuccessful, setPaymentSuccessful] = useState(false);
+  // Paid, but the payment provider hasn't confirmed yet - the order is created automatically when it does
+  const [orderPendingConfirmation, setOrderPendingConfirmation] = useState(false);
   // CRITICAL: Prevent duplicate order creation from multiple payment callbacks
   const [paymentProcessed, setPaymentProcessed] = useState(false);
   const [guestCustomer, setGuestCustomer] = useState({
@@ -267,6 +269,163 @@ export default function CheckoutPage() {
     }
   };
 
+  // The order exactly as it will be saved - built once, used both for the checkout saved on the
+  // server before payment and for the order created after payment.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const buildCartOrderData = (customerInfo: typeof guestCustomer, reference: string, fee: number): any => {
+    const shippingCost = 0;
+    console.log("[Checkout] Full items array from cart:", JSON.stringify(items, null, 2));
+    const buyItems = items.filter((item: any) => item.mode === 'buy');
+    const rentalItems = items.filter((item: any) => item.mode === 'rent');
+
+    // Buy subtotal (before discount)
+    const buySubtotal = buyItems.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
+
+    // Rental subtotal (with rental days)
+    const rentalSubtotal = rentalItems.reduce((sum: number, item: any) => {
+      const days = rentalSchedule?.rentalDays || item.rentalDays || 1;
+      return sum + (item.price * item.quantity * days);
+    }, 0);
+
+    // Apply discount ONLY to buy items
+    const buyQuantity = buyItems.reduce((sum: number, item: any) => sum + item.quantity, 0);
+    const discountPercent = getDiscountPercentage(buyQuantity);
+    const discountAmt = buySubtotal * (discountPercent / 100);
+    const buySubtotalAfterDiscount = buySubtotal - discountAmt;
+
+    // Total goods = buy after discount + rental (no discount)
+    const goodsSubtotal = buySubtotalAfterDiscount + rentalSubtotal;
+    // VAT on goods only - never on the caution fee or delivery
+    const taxAmount = calculateVat(goodsSubtotal, vatRate);
+    const totalAmount = goodsSubtotal + (cautionFee || 0) + shippingCost + taxAmount;
+
+    // Log the subtotal breakdown for debugging
+    console.log('[Checkout] 💰 PRICING BREAKDOWN:', {
+      buySubtotal,
+      rentalSubtotal,
+      goodsSubtotal,
+      discountAmount: discountAmt,
+      taxAmount,
+      cautionFee: cautionFee || 0,
+      totalAmount
+    });
+
+    // Attach rentalDays to each item for persistence/visibility in admin UI
+    const itemsWithRentalDays = items.map((it: any) => {
+      const mappedItem = {
+        ...it,
+        id: it.id,
+        name: it.name,
+        price: it.price,
+        quantity: it.quantity,
+        image: it.image || '', // Explicitly include image from cart
+        mode: it.mode,
+        unitPrice: it.price,
+        rentalDays: it.rentalDays || rentalSchedule?.rentalDays || 1,
+        selectedSize: it.size,
+        selectedColor: it.color,
+      };
+      console.log(`[Checkout] 📦 Item "${it.name}":`, {
+        mode: mappedItem.mode,
+        hasMode: !!mappedItem.mode,
+        originalMode: it.mode,
+        qty: it.quantity,
+        price: it.price
+      });
+      return mappedItem;
+    });
+
+    // LOG THE ENTIRE ORDER DATA BEFORE SENDING
+    console.log('[Checkout] 🚀 ABOUT TO SEND ORDER TO API:', {
+      itemCount: itemsWithRentalDays.length,
+      items: itemsWithRentalDays.map((i: any) => ({
+        name: i.name,
+        mode: i.mode,
+        qty: i.quantity
+      })),
+      total: totalAmount
+    });
+
+    // VALIDATE item modes before sending
+    const modeValidation = validateCheckoutItemsModes(itemsWithRentalDays);
+    if (modeValidation.itemsWithoutMode > 0) {
+      console.error('[Checkout] ❌ CRITICAL: Items missing mode field!');
+      console.error('[Checkout] This will cause issues in production!');
+    }
+
+    // Parse full name into firstName and lastName for unified schema
+    const nameParts = (customerInfo.fullName || '').trim().split(/\s+/);
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+
+    return {
+      reference,
+      email: customerInfo.email.toLowerCase(),
+      firstName: firstName,
+      lastName: lastName,
+      phone: customerInfo.phone,
+      buyerId: buyer?.id || null,
+      city: customerInfo.city || '',
+      address: customerInfo.address || '',
+      state: customerInfo.state || '',
+      country: customerInfo.country || 'Nigeria',
+      orderType: 'regular',
+      items: itemsWithRentalDays,
+      rentalSchedule: rentalSchedule || null,
+      shippingType: shippingOption || 'standard',
+      status: paymentMethod === 'manual' ? 'pending' : 'pending', // Both pending, but manual stays longer
+      paymentMethod: paymentMethod, // Store payment method
+      paymentProofUrl: paymentProofUrl || null, // Store proof URL
+      shippingCost: 0,
+      subtotal: goodsSubtotal,  // ← CRITICAL FIX: Use goodsSubtotal (buy + rental), not just buySubtotal
+      // CRITICAL: Add top-level discount and VAT fields (not just in pricing object)
+      discountPercentage: discountPercent,
+      discountAmount: discountAmt,
+      subtotalAfterDiscount: buySubtotalAfterDiscount,
+      vat: taxAmount,
+      vatPercent: vatRate * 100,  // VAT % charged on goods only (not caution fee/delivery)
+      cautionFee: (cautionFee || 0),  // CRITICAL: Save caution fee to top-level field
+      total: totalAmount,
+      paymentFee: fee,  // Flutterwave fee paid by the customer, on top of total
+      pricing: {
+        subtotal: goodsSubtotal,  // ← Use goodsSubtotal here too
+        buySubtotal: buySubtotal,
+        rentalSubtotal: rentalSubtotal,
+        goodsSubtotal: goodsSubtotal,
+        cautionFee: (cautionFee || 0),
+        tax: taxAmount,
+        shipping: 0,
+        total: totalAmount,
+        discount: discountAmt,
+        discountPercentage: discountPercent,
+        subtotalAfterDiscount: buySubtotalAfterDiscount,
+      },
+      createdAt: new Date().toISOString(),
+      paymentVerified: paymentMethod === 'paystack', // Manual payments are not verified yet
+    };
+  };
+
+  // Ask the server to create the order for a paid online checkout. The server confirms the
+  // payment with Flutterwave itself. Bank transfers can take a few minutes to confirm.
+  const confirmOnlineOrder = async (reference: string): Promise<'done' | 'no_checkout' | 'pending'> => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        const res = await fetch('/api/checkout/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reference }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data.success) return 'done';
+        if (data.status === 'no_checkout') return 'no_checkout';
+      } catch {
+        // network hiccup - try again
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+    return 'pending';
+  };
+
   // Handle payment success - save order (invoice auto-generated via API)
   const handlePaymentSuccess = async (response: any) => {
     console.log("✅ Payment success handler called");
@@ -366,135 +525,22 @@ export default function CheckoutPage() {
         sessionStorage.removeItem('customOrderQuote');
         return;
       } else {
-        console.log("[Checkout] Full items array from cart:", JSON.stringify(items, null, 2));
-        const buyItems = items.filter((item: any) => item.mode === 'buy');
-        const rentalItems = items.filter((item: any) => item.mode === 'rent');
+        orderData = buildCartOrderData(customerInfo, response.reference, response.manual ? 0 : pendingPaymentFee(response.reference));
+      }
 
-        // Buy subtotal (before discount)
-        const buySubtotal = buyItems.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0);
-
-        // Rental subtotal (with rental days)
-        const rentalSubtotal = rentalItems.reduce((sum: number, item: any) => {
-          const days = rentalSchedule?.rentalDays || item.rentalDays || 1;
-          return sum + (item.price * item.quantity * days);
-        }, 0);
-
-        // Apply discount ONLY to buy items
-        const buyQuantity = buyItems.reduce((sum: number, item: any) => sum + item.quantity, 0);
-        const discountPercent = getDiscountPercentage(buyQuantity);
-        const discountAmt = buySubtotal * (discountPercent / 100);
-        const buySubtotalAfterDiscount = buySubtotal - discountAmt;
-
-        // Total goods = buy after discount + rental (no discount)
-        const goodsSubtotal = buySubtotalAfterDiscount + rentalSubtotal;
-        // VAT on goods only - never on the caution fee or delivery
-        const taxAmount = calculateVat(goodsSubtotal, vatRate);
-        const totalAmount = goodsSubtotal + (cautionFee || 0) + shippingCost + taxAmount;
-
-        // Log the subtotal breakdown for debugging
-        console.log('[Checkout] 💰 PRICING BREAKDOWN:', {
-          buySubtotal,
-          rentalSubtotal,
-          goodsSubtotal,
-          discountAmount: discountAmt,
-          taxAmount,
-          cautionFee: cautionFee || 0,
-          totalAmount
-        });
-
-        // Attach rentalDays to each item for persistence/visibility in admin UI
-        const itemsWithRentalDays = items.map((it: any) => {
-          const mappedItem = {
-            ...it,
-            id: it.id,
-            name: it.name,
-            price: it.price,
-            quantity: it.quantity,
-            image: it.image || '', // Explicitly include image from cart
-            mode: it.mode,
-            unitPrice: it.price,
-            rentalDays: it.rentalDays || rentalSchedule?.rentalDays || 1,
-            selectedSize: it.size,
-            selectedColor: it.color,
-          };
-          console.log(`[Checkout] 📦 Item "${it.name}":`, {
-            mode: mappedItem.mode,
-            hasMode: !!mappedItem.mode,
-            originalMode: it.mode,
-            qty: it.quantity,
-            price: it.price
-          });
-          return mappedItem;
-        });
-
-        // LOG THE ENTIRE ORDER DATA BEFORE SENDING
-        console.log('[Checkout] 🚀 ABOUT TO SEND ORDER TO API:', {
-          itemCount: itemsWithRentalDays.length,
-          items: itemsWithRentalDays.map((i: any) => ({
-            name: i.name,
-            mode: i.mode,
-            qty: i.quantity
-          })),
-          total: totalAmount
-        });
-
-        // VALIDATE item modes before sending
-        const modeValidation = validateCheckoutItemsModes(itemsWithRentalDays);
-        if (modeValidation.itemsWithoutMode > 0) {
-          console.error('[Checkout] ❌ CRITICAL: Items missing mode field!');
-          console.error('[Checkout] This will cause issues in production!');
+      // Online payment for a cart saved at checkout: the server creates the order once
+      // Flutterwave confirms the payment (also done by webhook / scheduled check if this page closes)
+      if (!customQuote && !response.manual) {
+        const outcome = await confirmOnlineOrder(response.reference);
+        if (outcome !== 'no_checkout') {
+          setOrderPendingConfirmation(outcome === 'pending');
+          setPaymentSuccessful(true);
+          setSuccessReference(response.reference);
+          clearCart();
+          localStorage.removeItem('empi_pending_payment');
+          return;
         }
-
-        // Parse full name into firstName and lastName for unified schema
-        const nameParts = (customerInfo.fullName || '').trim().split(/\s+/);
-        const firstName = nameParts[0] || '';
-        const lastName = nameParts.slice(1).join(' ') || '';
-
-        orderData = {
-          reference: response.reference,
-          email: customerInfo.email.toLowerCase(),
-          firstName: firstName,
-          lastName: lastName,
-          phone: customerInfo.phone,
-          buyerId: buyer?.id || null,
-          city: customerInfo.city || '',
-          address: customerInfo.address || '',
-          state: customerInfo.state || '',
-          country: customerInfo.country || 'Nigeria',
-          orderType: 'regular',
-          items: itemsWithRentalDays,
-          rentalSchedule: rentalSchedule || null,
-          shippingType: shippingOption || 'standard',
-          status: paymentMethod === 'manual' ? 'pending' : 'pending', // Both pending, but manual stays longer
-          paymentMethod: paymentMethod, // Store payment method
-          paymentProofUrl: paymentProofUrl || null, // Store proof URL
-          shippingCost: 0,
-          subtotal: goodsSubtotal,  // ← CRITICAL FIX: Use goodsSubtotal (buy + rental), not just buySubtotal
-          // CRITICAL: Add top-level discount and VAT fields (not just in pricing object)
-          discountPercentage: discountPercent,
-          discountAmount: discountAmt,
-          subtotalAfterDiscount: buySubtotalAfterDiscount,
-          vat: taxAmount,
-          vatPercent: vatRate * 100,  // VAT % charged on goods only (not caution fee/delivery)
-          cautionFee: (cautionFee || 0),  // CRITICAL: Save caution fee to top-level field
-          total: totalAmount,
-          paymentFee: response.manual ? 0 : pendingPaymentFee(response.reference),  // Flutterwave fee paid by the customer, on top of total
-          pricing: {
-            subtotal: goodsSubtotal,  // ← Use goodsSubtotal here too
-            buySubtotal: buySubtotal,
-            rentalSubtotal: rentalSubtotal,
-            goodsSubtotal: goodsSubtotal,
-            cautionFee: (cautionFee || 0),
-            tax: taxAmount,
-            shipping: 0,
-            total: totalAmount,
-            discount: discountAmt,
-            discountPercentage: discountPercent,
-            subtotalAfterDiscount: buySubtotalAfterDiscount,
-          },
-          createdAt: new Date().toISOString(),
-          paymentVerified: paymentMethod === 'paystack', // Manual payments are not verified yet
-        };
+        // No saved checkout (older session) - fall back to saving the order from this page
       }
 
       console.log("💾 Saving order to unified endpoint...");
@@ -758,7 +804,9 @@ export default function CheckoutPage() {
 
               {/* Description */}
               <p className="text-gray-600 text-lg mb-8">
-                Check messages on your product card and visit the dashboard to track your order progress in real-time
+                {orderPendingConfirmation
+                  ? "Payment received. We're confirming it with our payment provider - your order will appear in your dashboard within a few minutes and your invoice will be emailed to you."
+                  : "Check messages on your product card and visit the dashboard to track your order progress in real-time"}
               </p>
 
               {/* Buttons */}
@@ -1124,6 +1172,25 @@ export default function CheckoutPage() {
                       paymentFee,
                       timestamp: Date.now()
                     }));
+
+                    // Save the cart on the server first, so the order can be created even if the
+                    // customer closes this page after paying (e.g. while a bank transfer confirms)
+                    if (!customQuote) {
+                      const intentRes = await fetch('/api/checkout/intent', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          reference: ref,
+                          paymentFee,
+                          payload: buildCartOrderData(customerInfo, ref, paymentFee),
+                        }),
+                      }).catch(() => null);
+                      if (!intentRes || !intentRes.ok) {
+                        setOrderError("We couldn't start your checkout. Please check your connection and try again. You have not been charged.");
+                        setIsProcessing(false);
+                        return;
+                      }
+                    }
 
                     // Attempt modal first if Flutterwave is available
                     let modalAttempted = false;

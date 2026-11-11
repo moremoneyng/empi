@@ -13,6 +13,7 @@
 import { sendEmail } from './email';
 import connectDB from './mongodb';
 import Message from './models/Message';
+import { getSiteUrl } from './siteUrl';
 
 export interface NotificationPayload {
   type: 'order-placed' | 'payment-received' | 'order-ready' | 'order-shipped' | 'order-approved' | 'payment-failed';
@@ -123,7 +124,7 @@ async function sendNotificationEmail(payload: {
     let subject = '';
     let html = '';
 
-    const baseUrl = process.env.NEXTAUTH_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
+    const baseUrl = getSiteUrl();
     const dashboardLink = `${baseUrl}/dashboard`;
 
     switch (type) {

@@ -6,6 +6,7 @@ import Order from '@/lib/models/Order';
 import UnifiedOrder from '@/lib/models/UnifiedOrder';
 import { calculateQuote } from '@/lib/discountCalculator';
 import { getVatConfig } from '@/lib/vatSettings';
+import { getAdminFromRequest } from '@/lib/adminAuth';
 
 /**
  * GET /api/messages
@@ -119,6 +120,14 @@ export async function POST(request: NextRequest) {
       recipientType = 'all', // 'admin', 'buyer', or 'all'
       deliveryOption = null, // 'pickup' or 'delivery' - set when customer selects their preference
     } = body;
+
+    // Quotes and final prices change what the customer is charged - only a signed-in admin may send them
+    if (senderType === 'admin' && (messageType === 'quote' || isFinalPrice || quotedPrice)) {
+      const admin = await getAdminFromRequest(request);
+      if (!admin) {
+        return NextResponse.json({ error: 'Only an admin can send a price quote' }, { status: 401 });
+      }
+    }
 
     // Newer admin quotes send the exact breakdown they calculated (VAT on products only).
     // Those values are used as-is so VAT/discount are never applied a second time.

@@ -1,0 +1,22 @@
+name: Reconcile online payments
+
+# Every 10 minutes: make sure every successful Flutterwave payment has an order.
+# Catches customers who paid (e.g. by bank transfer) and closed the page before the order saved.
+# The endpoint only ever creates orders from payments Flutterwave confirms - it never edits or deletes.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call reconcile endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          AUTH=()
+          if [ -n "$CRON_SECRET" ]; then AUTH=(-H "Authorization: Bearer $CRON_SECRET"); fi
+          curl -sS --fail-with-body --max-time 120 "${AUTH[@]}" https://www.empicostumes.com/api/cron/reconcile-payments
