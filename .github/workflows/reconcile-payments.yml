@@ -17,6 +17,8 @@ jobs:
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          AUTH=()
-          if [ -n "$CRON_SECRET" ]; then AUTH=(-H "Authorization: Bearer $CRON_SECRET"); fi
-          curl -sS --fail-with-body --max-time 120 "${AUTH[@]}" https://www.empicostumes.com/api/cron/reconcile-payments
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::notice::Add the CRON_SECRET repository secret (same value as on Vercel) to enable this check."
+            exit 0
+          fi
+          curl -sS --fail-with-body --max-time 120 -H "Authorization: Bearer $CRON_SECRET" https://www.empicostumes.com/api/cron/reconcile-payments
