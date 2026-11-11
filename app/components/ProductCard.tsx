@@ -7,6 +7,7 @@ import Link from "next/link";
 import { CURRENCY_RATES } from "./constants";
 import { useCart } from "./CartContext";
 import { useMode } from "@/app/context/ModeContext";
+import { getRentLimit } from "@/lib/rentalLimits";
 import { Toast } from "./Toast";
 import { Portal } from "./Portal";
 
@@ -25,6 +26,7 @@ interface Product {
   availableForBuy?: boolean;
   availableForRent?: boolean;
   isCostumeShow?: boolean;
+  maxRentQuantity?: number | null;
 }
 
 interface ProductCardProps {
@@ -76,7 +78,8 @@ export function ProductCard({ product, currency = "NGN", compactOnMobile = false
       };
     }
 
-    addItem({
+    const rentLimit = activeMode === "rent" ? getRentLimit(product) : null;
+    const result = addItem({
       id: productId,
       name: product.name,
       price: price,
@@ -84,7 +87,19 @@ export function ProductCard({ product, currency = "NGN", compactOnMobile = false
       mode: activeMode as "buy" | "rent",
       quantity: 1,
       ...rentalMetadata,
+      ...(rentLimit !== null && { maxRentQuantity: rentLimit }),
     });
+
+    if (result.added === 0) {
+      setErrorMessage(
+        rentLimit === 1
+          ? "Only 1 of this costume can be rented per order — it's already in your cart."
+          : `Only ${rentLimit} of this costume can be rented per order — you've reached the limit.`
+      );
+      setShowError(true);
+      setTimeout(() => setShowError(false), 4000);
+      return;
+    }
 
     // Show notification
     setShowNotification(true);

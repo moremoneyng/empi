@@ -22,6 +22,31 @@ const SHIPPING_OPTIONS = {
 
 export default function CheckoutPage() {
   const { items, clearCart, total, cautionFee, rentalSchedule } = useCart();
+
+  // Returns an error message when a rented costume is over its per-order limit, otherwise null
+  const checkRentLimits = async (): Promise<string | null> => {
+    const totals = new Map<string, { qty: number; name: string }>();
+    items.filter((i: any) => i.mode === 'rent').forEach((i: any) => {
+      const cur = totals.get(i.id) || { qty: 0, name: i.name };
+      cur.qty += i.quantity || 1;
+      totals.set(i.id, cur);
+    });
+    if (totals.size === 0) return null;
+    try {
+      const res = await fetch(`/api/products/rental-limits?ids=${encodeURIComponent(Array.from(totals.keys()).join(','))}`, { cache: 'no-store' });
+      if (!res.ok) return null; // the server checks again before payment
+      const { limits } = await res.json();
+      for (const [id, t] of totals) {
+        const limit = limits?.[id]?.limit;
+        if (typeof limit === 'number' && t.qty > limit) {
+          return `Only ${limit} of "${limits[id].name || t.name}" can be rented per order. Please go back to your cart and reduce the quantity.`;
+        }
+      }
+    } catch {
+      // network issue - the server checks again before payment
+    }
+    return null;
+  };
   const { buyer } = useBuyer();
   const router = useRouter();
 
@@ -1124,6 +1149,15 @@ export default function CheckoutPage() {
                     return;
                   }
 
+                  // Rental stock limits (e.g. Costume Show pieces: 1 per order)
+                  if (!customQuote) {
+                    const limitError = await checkRentLimits();
+                    if (limitError) {
+                      setOrderError(limitError);
+                      return;
+                    }
+                  }
+
                   // Manual Payment Flow
                   if (paymentMethod === 'manual') {
                     if (!paymentProofUrl) {
@@ -1186,6 +1220,12 @@ export default function CheckoutPage() {
                         }),
                       }).catch(() => null);
                       if (!intentRes || !intentRes.ok) {
+                        const intentErr = intentRes ? await intentRes.json().catch(() => null) : null;
+                        if (intentErr?.code === 'RENT_LIMIT_EXCEEDED') {
+                          setOrderError(`${intentErr.error} You have not been charged.`);
+                          setIsProcessing(false);
+                          return;
+                        }
                         setOrderError("We couldn't start your checkout. Please check your connection and try again. You have not been charged.");
                         setIsProcessing(false);
                         return;

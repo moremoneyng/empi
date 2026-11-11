@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import connectDB from '@/lib/mongodb';
 import CheckoutIntent from '@/lib/models/CheckoutIntent';
+import { findRentLimitViolations } from '@/lib/rentalLimits.server';
 
 const REFERENCE_PATTERN = /^EMPI-\d{10,16}-[a-z0-9]{4,16}$/;
 const MAX_BODY_BYTES = 200_000;
@@ -35,6 +36,20 @@ export async function POST(request: NextRequest) {
     }
 
     await connectDB();
+
+    // Stock limits for rentals are checked BEFORE the customer pays
+    const rentViolations = await findRentLimitViolations(payload.items);
+    if (rentViolations.length > 0) {
+      return NextResponse.json(
+        {
+          error: `${rentViolations.map((v) => v.message).join(' ')} Please reduce the quantity in your cart.`,
+          code: 'RENT_LIMIT_EXCEEDED',
+          violations: rentViolations,
+        },
+        { status: 422 }
+      );
+    }
+
     const existing = await CheckoutIntent.findOne({ reference }).select('status').lean();
     if (existing && existing.status !== 'awaiting_payment') {
       return NextResponse.json({ error: 'This checkout has already been processed' }, { status: 409 });

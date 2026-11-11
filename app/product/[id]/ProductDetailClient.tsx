@@ -10,6 +10,7 @@ import { getProductMedia } from "@/lib/media";
 import { CURRENCY_RATES } from "@/app/components/constants";
 import { useCart } from "@/app/components/CartContext";
 import { useMode } from "@/app/context/ModeContext";
+import { getRentLimit as getProductRentLimit } from "@/lib/rentalLimits";
 
 import { Toast } from "@/app/components/Toast";
 import { Portal } from "@/app/components/Portal";
@@ -118,7 +119,7 @@ interface Props {
 export default function ProductDetailClient({ product, allProducts, currency = "NGN" }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { addItem, items, canAddItem } = useCart();
+  const { addItem, items, canAddItem, getRentedQuantity } = useCart();
 
   // Get safe product ID first
   const productId = product.id || product._id || '';
@@ -138,7 +139,7 @@ export default function ProductDetailClient({ product, allProducts, currency = "
     }
   }, [productId, isHydrated, product.availableForBuy]);
 
-  const [quantity, setQuantity] = useState(1);
+  const [rawQuantity, setQuantity] = useState(1);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [addedToCart, setAddedToCart] = useState(false);
   const [showRentalPolicy, setShowRentalPolicy] = useState(false);
@@ -203,6 +204,16 @@ export default function ProductDetailClient({ product, allProducts, currency = "
 
   const [selectedSizes, setSelectedSizes] = useState<Record<string, number>>({});
 
+  // Rental stock limit (Costume Show = 1; otherwise whatever the admin set, or no limit)
+  const rentLimit = mode === "rent" ? getProductRentLimit(product) : null;
+  const rentedInCart = rentLimit !== null ? getRentedQuantity(productId) : 0;
+  const rentRemaining = rentLimit !== null ? Math.max(0, rentLimit - rentedInCart) : Infinity;
+  const selectedSizeTotal = Object.values(selectedSizes).reduce((sum, q) => sum + q, 0);
+  const rentLimitReached = rentLimit !== null && rentRemaining <= 0;
+
+  // Keep the plain quantity selector inside the limit (e.g. after switching to rent mode)
+  const quantity = rentLimit !== null ? Math.min(rawQuantity, Math.max(1, rentRemaining)) : rawQuantity;
+
   useEffect(() => {
     // Reset selected sizes when color or mode changes, or auto-select if only 1 size
     if (displayedSizes.length === 1) {
@@ -212,7 +223,21 @@ export default function ProductDetailClient({ product, allProducts, currency = "
     }
   }, [selectedColorName, mode, displayedSizes.length]);
 
+  const showLimitMessage = (message: string) => {
+    setCartConflict({ hasConflict: true, message });
+    setTimeout(() => setCartConflict({ hasConflict: false, message: "" }), 4000);
+  };
+
+  const limitText = (limit: number) =>
+    limit === 1
+      ? `Only 1 of this costume can be rented per order.`
+      : `Only ${limit} of this costume can be rented per order.`;
+
   const handleSizeClick = (size: string) => {
+    if (selectedSizes[size] === undefined && rentLimit !== null && selectedSizeTotal + 1 > rentRemaining) {
+      showLimitMessage(rentLimitReached ? `${limitText(rentLimit)} It's already in your cart.` : limitText(rentLimit));
+      return;
+    }
     setSelectedSizes(prev => {
       const updated = { ...prev };
       if (updated[size] !== undefined) {
@@ -226,6 +251,11 @@ export default function ProductDetailClient({ product, allProducts, currency = "
 
   const handleSizeQtyChange = (size: string, newQty: number) => {
     if (newQty < 1) return;
+    const current = selectedSizes[size] || 0;
+    if (rentLimit !== null && newQty > current && selectedSizeTotal - current + newQty > rentRemaining) {
+      showLimitMessage(limitText(rentLimit));
+      return;
+    }
     setSelectedSizes(prev => ({
       ...prev,
       [size]: newQty
@@ -239,6 +269,18 @@ export default function ProductDetailClient({ product, allProducts, currency = "
       setCartConflict({ hasConflict: true, message: validation.message });
       setTimeout(() => setCartConflict({ hasConflict: false, message: "" }), 4000);
       return;
+    }
+
+    if (rentLimit !== null) {
+      const requested = displayedSizes.length > 0 ? selectedSizeTotal : quantity;
+      if (rentRemaining <= 0) {
+        showLimitMessage(`${limitText(rentLimit)} It's already in your cart.`);
+        return;
+      }
+      if (requested > rentRemaining) {
+        showLimitMessage(`${limitText(rentLimit)} You can add ${rentRemaining} more.`);
+        return;
+      }
     }
 
     const price = mode === "rent" ? product.rentPrice : product.sellPrice;
@@ -269,6 +311,7 @@ export default function ProductDetailClient({ product, allProducts, currency = "
           quantity: qty,
           color: selectedColorName,
           size: size,
+          ...(rentLimit !== null && { maxRentQuantity: rentLimit }),
         };
         addItem(cartItem);
       });
@@ -283,6 +326,7 @@ export default function ProductDetailClient({ product, allProducts, currency = "
         quantity: quantity,
         color: selectedColorName,
         size: "",
+        ...(rentLimit !== null && { maxRentQuantity: rentLimit }),
       };
       console.log('[ProductDetail] Adding product without sizes to cart:', cartItem);
       addItem(cartItem);
@@ -588,7 +632,9 @@ export default function ProductDetailClient({ product, allProducts, currency = "
                                   </span>
                                   <button
                                     onClick={() => handleSizeQtyChange(size, qty + 1)}
-                                    className="w-8 h-8 flex items-center justify-center text-gray-500 hover:bg-white dark:hover:bg-white/5 rounded-lg transition font-bold"
+                                    disabled={rentLimit !== null && selectedSizeTotal >= rentRemaining}
+                                    aria-label={`Increase quantity for size ${size}`}
+                                    className="w-8 h-8 flex items-center justify-center text-gray-500 hover:bg-white dark:hover:bg-white/5 rounded-lg transition font-bold disabled:opacity-30 disabled:cursor-not-allowed"
                                   >
                                     +
                                   </button>
@@ -611,6 +657,23 @@ export default function ProductDetailClient({ product, allProducts, currency = "
 
             {/* Quantity and Actions */}
             <div className="pt-2 border-t border-gray-100 dark:border-white/5 space-y-4">
+              {rentLimit !== null && (
+                <div
+                  className={`flex items-start gap-2.5 rounded-2xl border px-4 py-3 text-xs font-semibold ${
+                    rentLimitReached
+                      ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300'
+                      : 'border-blue-100 bg-blue-50 text-blue-800 dark:border-blue-900/40 dark:bg-blue-950/20 dark:text-blue-300'
+                  }`}
+                  role="status"
+                >
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-px" />
+                  <span>
+                    {isCostumeShow ? 'Costume Show piece — ' : 'Limited stock — '}
+                    {rentLimit === 1 ? 'only 1 can be rented per order.' : `up to ${rentLimit} can be rented per order.`}
+                    {rentedInCart > 0 && (rentLimitReached ? ' It is already in your cart.' : ` ${rentedInCart} already in your cart.`)}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center gap-4">
                 {/* Quantity input */}
                 {displayedSizes.length === 0 && (
@@ -625,8 +688,16 @@ export default function ProductDetailClient({ product, allProducts, currency = "
                       {quantity}
                     </span>
                     <button
-                      onClick={() => setQuantity(quantity + 1)}
-                      className="w-10 h-10 flex items-center justify-center text-gray-500 hover:bg-white dark:hover:bg-white/5 rounded-xl transition font-bold"
+                      onClick={() => {
+                        if (rentLimit !== null && quantity + 1 > rentRemaining) {
+                          showLimitMessage(limitText(rentLimit));
+                          return;
+                        }
+                        setQuantity(quantity + 1);
+                      }}
+                      disabled={rentLimit !== null && quantity >= rentRemaining}
+                      aria-label="Increase quantity"
+                      className="w-10 h-10 flex items-center justify-center text-gray-500 hover:bg-white dark:hover:bg-white/5 rounded-xl transition font-bold disabled:opacity-30 disabled:cursor-not-allowed"
                     >
                       +
                     </button>
@@ -638,13 +709,14 @@ export default function ProductDetailClient({ product, allProducts, currency = "
                   {(mode === 'buy' && (isCostumeShow || (product.availableForBuy !== false && product.sellPrice && product.sellPrice > 0))) || (mode === 'rent' && product.availableForRent !== false && product.rentPrice && product.rentPrice > 0) ? (
                     <button
                       onClick={handleAddToCart}
-                      className={`w-full py-4 px-6 rounded-2xl font-black text-xs uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-3 shadow-xl hover:scale-[1.02] active:scale-95 ${
+                      disabled={rentLimitReached}
+                      className={`w-full disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 py-4 px-6 rounded-2xl font-black text-xs uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-3 shadow-xl hover:scale-[1.02] active:scale-95 ${
                         mode === 'buy'
                           ? 'bg-lime-600 hover:bg-lime-500 text-white shadow-lime-600/20'
                           : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-600/20'
                       }`}
                     >
-                      <ShoppingCart className="h-4 w-4" /> Add to Cart
+                      <ShoppingCart className="h-4 w-4" /> {rentLimitReached ? 'Already in Cart' : 'Add to Cart'}
                     </button>
                   ) : (
                     <div className="w-full py-4 px-6 rounded-2xl bg-gray-100 dark:bg-white/5 text-gray-400 dark:text-gray-500 font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 cursor-not-allowed border border-gray-200 dark:border-white/5">

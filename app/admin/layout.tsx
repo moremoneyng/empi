@@ -64,7 +64,7 @@ export default function AdminLayout({
         <Suspense fallback={null}>
           <AdminSidebar />
         </Suspense>
-        <main className="flex-1 w-full overflow-auto bg-gray-50">
+        <main className="flex-1 w-full min-w-0 overflow-auto bg-gray-50 pt-14 md:pt-0">
           <div className="w-full h-full">
             {children}
           </div>

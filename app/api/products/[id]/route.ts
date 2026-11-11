@@ -1,3 +1,4 @@
+import { normalizeMaxRentQuantity } from '@/lib/rentalLimits';
 import { NextRequest, NextResponse } from 'next/server';
 import connectDB from '@/lib/mongodb';
 import Product from '@/lib/models/Product';
@@ -78,6 +79,7 @@ export async function PUT(
     if (body.isCostumeShow !== undefined) updateData.isCostumeShow = body.isCostumeShow;
     if (body.availableForBuy !== undefined) updateData.availableForBuy = body.availableForBuy;
     if (body.availableForRent !== undefined) updateData.availableForRent = body.availableForRent;
+    if (body.maxRentQuantity !== undefined) updateData.maxRentQuantity = normalizeMaxRentQuantity(body.maxRentQuantity);
 
     // Handle nested variants
     if (body.variants !== undefined) {

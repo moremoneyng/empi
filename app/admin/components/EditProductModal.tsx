@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import Image from 'next/image';
 import { X, AlertCircle, Plus, Check, ChevronRight, Palette, Ruler, Trash2, Star, Eye, ChevronLeft, Loader2 } from 'lucide-react';
 import { ProductVideoManager } from './ProductVideoManager';
+import { RentLimitField } from './RentLimitField';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 export interface NestedSizeEntry {
@@ -42,6 +43,7 @@ export interface Product {
   availableForBuy?: boolean;
   availableForRent?: boolean;
   isCostumeShow?: boolean;
+  maxRentQuantity?: number | null;
 }
 
 // ─── Color resolver ───────────────────────────────────────────────────────────
@@ -147,6 +149,7 @@ export default function EditProductModal({
     availableForBuy: product.availableForBuy ?? true,
     availableForRent: product.availableForRent ?? true,
     isCostumeShow: product.isCostumeShow ?? false,
+    maxRentQuantity: product.maxRentQuantity ?? null,
   });
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -975,6 +978,12 @@ export default function EditProductModal({
                   <p className="text-xs text-gray-500">Show this product in the Costume Show special collection</p>
                 </div>
               </label>
+              <RentLimitField
+                value={formData.maxRentQuantity}
+                onChange={(v) => setFormData((p: any) => ({ ...p, maxRentQuantity: v }))}
+                isCostumeShow={formData.isCostumeShow ?? false}
+                availableForRent={formData.availableForRent ?? true}
+              />
             </div>
 
             {/* ── Sticky Footer Actions ── */}

@@ -3,6 +3,8 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from "react";
 import { ItemSize } from "@/app/lib/deliverySystem";
 
+export type AddItemResult = { added: number; limited: boolean; limit: number | null };
+
 export interface CartItem {
   id: string;
   name: string;
@@ -17,11 +19,13 @@ export interface CartItem {
   fragile?: boolean;
   // Rental metadata - store rental days for reference only
   rentalDays?: number;
+  // Most units of this costume that can be rented per order (null/undefined = no limit)
+  maxRentQuantity?: number | null;
 }
 
 interface CartContextType {
   items: CartItem[];
-  addItem: (item: CartItem) => void;
+  addItem: (item: CartItem) => AddItemResult;
   removeItem: (id: string, mode: "buy" | "rent", color?: string, size?: string) => void;
   updateQuantity: (id: string, mode: "buy" | "rent", quantity: number, color?: string, size?: string) => void;
   clearCart: () => void;
@@ -67,6 +71,9 @@ interface CartContextType {
   };
   // Get current cart mode (buy or rent or null if empty)
   getCartMode: () => "buy" | "rent" | null;
+  // Rental stock limits
+  getRentLimit: (id: string) => number | null;
+  getRentedQuantity: (id: string) => number;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
@@ -172,28 +179,98 @@ export function CartProvider({ children }: { children: ReactNode }) {
     }
   }, [rentalSchedule]);
 
-  const addItem = (newItem: CartItem) => {
+  // Rental limits known for products in the cart (refreshed from the server on load)
+  const [rentLimits, setRentLimits] = useState<Record<string, number | null>>({});
+
+  const getRentLimit = (id: string): number | null => {
+    if (Object.prototype.hasOwnProperty.call(rentLimits, id)) return rentLimits[id];
+    const known = items.find((i) => i.id === id && i.mode === "rent" && i.maxRentQuantity);
+    return known?.maxRentQuantity ?? null;
+  };
+
+  const rentedQtyIn = (list: CartItem[], id: string) =>
+    list.reduce((sum, i) => (i.id === id && i.mode === "rent" ? sum + i.quantity : sum), 0);
+
+  const getRentedQuantity = (id: string) => rentedQtyIn(items, id);
+
+  const sameLine = (a: CartItem, b: { id: string; mode: string; color?: string; size?: any }) =>
+    a.id === b.id && a.mode === b.mode && a.color === b.color && a.size === b.size;
+
+  const addItem = (newItem: CartItem): AddItemResult => {
+    let quantity = Math.max(1, Math.floor(newItem.quantity || 1));
+    let limit: number | null = null;
+    let limited = false;
+
+    if (newItem.mode === "rent") {
+      const itemLimit = newItem.maxRentQuantity && newItem.maxRentQuantity > 0 ? newItem.maxRentQuantity : null;
+      limit = itemLimit ?? getRentLimit(newItem.id);
+      if (itemLimit) setRentLimits((prev) => ({ ...prev, [newItem.id]: itemLimit }));
+      if (limit !== null) {
+        const remaining = Math.max(0, limit - rentedQtyIn(items, newItem.id));
+        if (quantity > remaining) {
+          quantity = remaining;
+          limited = true;
+        }
+        if (quantity <= 0) return { added: 0, limited: true, limit };
+      }
+    }
+
+    const toAdd = { ...newItem, quantity, ...(limit !== null && { maxRentQuantity: limit }) };
     setItems((prev) => {
-      const existing = prev.find(
-        (item) =>
-          item.id === newItem.id &&
-          item.mode === newItem.mode &&
-          item.color === newItem.color &&
-          item.size === newItem.size
-      );
+      const existing = prev.find((item) => sameLine(item, toAdd));
       if (existing) {
         return prev.map((item) =>
-          item.id === newItem.id &&
-          item.mode === newItem.mode &&
-          item.color === newItem.color &&
-          item.size === newItem.size
-            ? { ...item, quantity: item.quantity + newItem.quantity }
-            : item
+          sameLine(item, toAdd) ? { ...item, quantity: item.quantity + quantity, ...(limit !== null && { maxRentQuantity: limit }) } : item
         );
       }
-      return [...prev, newItem];
+      return [...prev, toAdd];
     });
+    return { added: quantity, limited, limit };
   };
+
+  // Refresh rental limits from the server (stock can change after items were added)
+  useEffect(() => {
+    if (!isHydrated) return;
+    const rentIds = Array.from(new Set(items.filter((i) => i.mode === "rent").map((i) => i.id))).filter(
+      (id) => !Object.prototype.hasOwnProperty.call(rentLimits, id)
+    );
+    if (rentIds.length === 0) return;
+    let cancelled = false;
+    fetch(`/api/products/rental-limits?ids=${encodeURIComponent(rentIds.join(","))}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.limits) return;
+        const fetched: Record<string, number | null> = {};
+        rentIds.forEach((id) => {
+          fetched[id] = data.limits[id] ? data.limits[id].limit ?? null : null;
+        });
+        setRentLimits((prev) => ({ ...prev, ...fetched }));
+        // Bring any line that is now over the limit back within it
+        setItems((prev) => {
+          const remaining: Record<string, number> = {};
+          let changed = false;
+          const next = prev
+            .map((item) => {
+              if (item.mode !== "rent" || !Object.prototype.hasOwnProperty.call(fetched, item.id)) return item;
+              const lim = fetched[item.id];
+              if (lim === null) {
+                if (item.maxRentQuantity) { changed = true; return { ...item, maxRentQuantity: null }; }
+                return item;
+              }
+              const left = remaining[item.id] ?? lim;
+              const qty = Math.min(item.quantity, left);
+              remaining[item.id] = left - qty;
+              if (qty !== item.quantity || item.maxRentQuantity !== lim) changed = true;
+              return { ...item, quantity: qty, maxRentQuantity: lim };
+            })
+            .filter((item) => item.quantity > 0);
+          return changed || next.length !== prev.length ? next : prev;
+        });
+      })
+      .catch(() => { /* limits are also enforced at checkout */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHydrated, items]);
 
   const removeItem = (id: string, mode: "buy" | "rent", color?: string, size?: string) => {
     setItems((prev) =>
@@ -219,6 +296,19 @@ export function CartProvider({ children }: { children: ReactNode }) {
     if (quantity <= 0) {
       removeItem(id, mode, color, size);
       return;
+    }
+    if (mode === "rent") {
+      const limit = getRentLimit(id);
+      if (limit !== null) {
+        const others = items.reduce(
+          (sum, i) =>
+            i.id === id && i.mode === "rent" && !((color === undefined || i.color === color) && (size === undefined || i.size === size))
+              ? sum + i.quantity
+              : sum,
+          0
+        );
+        quantity = Math.min(quantity, Math.max(1, limit - others));
+      }
     }
     setItems((prev) =>
       prev.map((item) =>
@@ -495,7 +585,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <CartContext.Provider value={{ items, addItem, removeItem, updateQuantity, clearCart, total, cautionFee, deliveryState, setDeliveryState, deliveryDistance, setDeliveryDistance, deliveryQuote, setDeliveryQuote, rentalSchedule, setRentalSchedule, validateRentalSchedule, validateDeliveryInfo, validateCheckoutRequirements, canAddItem, getCartMode }}>
+    <CartContext.Provider value={{ items, addItem, removeItem, updateQuantity, clearCart, total, cautionFee, deliveryState, setDeliveryState, deliveryDistance, setDeliveryDistance, deliveryQuote, setDeliveryQuote, rentalSchedule, setRentalSchedule, validateRentalSchedule, validateDeliveryInfo, validateCheckoutRequirements, canAddItem, getCartMode, getRentLimit, getRentedQuantity }}>
       {children}
     </CartContext.Provider>
   );

@@ -1,855 +1,659 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
-  SalesRentalsChart,
-  RevenueTrendChart,
-  CumulativeRevenueChart,
-  OrdersCountChart,
-} from './DashboardCharts';
-import {
-  TrendingUp,
-  DollarSign,
-  Wallet,
-  ShieldCheck,
-  ShoppingBag,
-  UserPlus,
-  Receipt,
-  Package,
-  Users,
-  RefreshCw,
-  Clock,
-  ArrowUpRight,
-  CheckCircle2,
   AlertCircle,
+  ArrowDownRight,
+  ArrowRight,
+  ArrowUpRight,
+  CalendarClock,
+  CheckCircle2,
+  Clock,
+  CreditCard,
+  Crown,
+  Factory,
+  Info,
+  Package,
+  PackageCheck,
+  RefreshCw,
+  Repeat,
   Sparkles,
-  ChevronRight,
-  Activity,
-  Layers,
-  Award
+  Truck,
+  UserPlus,
+  Users,
 } from 'lucide-react';
+import { useAdmin } from '@/app/context/AdminContext';
+import { RevenueChart } from './dashboard/RevenueChart';
+import {
+  CHANNEL_LABEL,
+  KIND_LABEL,
+  SERIES,
+  SERIES_ORDER,
+  delta,
+  naira,
+  orderStatusMeta,
+  relativeTime,
+} from './dashboard/format';
 
-interface DailyMetrics {
-  date: string;
-  salesRevenue: number;
-  rentalRevenue: number;
-  totalRevenue: number;
-  ordersCount: number;
-  rentalOrdersCount: number;
-  salesOrdersCount: number;
-}
+/* ───────────────────────────── Types (mirror lib/analytics/storeMetrics.ts) ───────────────────────────── */
 
-interface StoreActivity {
-  id: string;
-  type: 'order' | 'user' | 'payment' | 'offline';
-  title: string;
-  subtitle: string;
-  timestamp: string;
-  badge: string;
-  badgeColor: string;
+type RangeKey = '7d' | '30d' | '90d' | 'mtd' | 'ytd' | '12m' | 'all';
+
+interface Financials {
+  orders: number;
+  rentalOrders: number;
+  salesOrders: number;
+  customOrders: number;
+  revenue: number;
+  sales: number;
+  rentals: number;
+  custom: number;
+  grossCollected: number;
+  outputVAT: number;
+  inputVAT: number;
+  vatPayable: number;
+  cautionCollected: number;
+  operatingExpenses: number;
+  expenseCount: number;
+  payrollPaid: number;
+  payrollCount: number;
+  totalExpenses: number;
+  netProfit: number;
+  margin: number;
+  averageOrderValue: number;
 }
 
 interface Analytics {
-  summary: {
-    totalRevenue: number;
-    totalSalesRevenue: number;
-    totalRentalRevenue: number;
-    totalOrders: number;
-    completedOrders: number;
-    pendingOrders: number;
-    totalProducts: number;
-    totalCustomers: number;
-    registeredCustomers: number;
-    guestCustomers: number;
-    averageOrderValue: number;
-    completionRate: number;
+  generatedAt: string;
+  range: { key: RangeKey; label: string; granularity: 'day' | 'month'; from: string; to: string };
+  kpis: Financials & { previous: Financials | null };
+  series: Array<{ date: string; sales: number; rentals: number; custom: number; orders: number }>;
+  channels: Array<{ key: string; label: string; orders: number; revenue: number; sales: number; rentals: number; custom: number }>;
+  topProducts: Array<{ key: string; name: string; image?: string; revenue: number; soldUnits: number; rentedUnits: number }>;
+  operations: {
+    awaitingPayment: { count: number; amount: number };
+    toApprove: { count: number; amount: number };
+    inProduction: { count: number };
+    readyForDelivery: { count: number };
+    deliveredInRange: { count: number };
+    rentalEvents: Array<{ id: string; orderNumber: string; customer: string; type: 'pickup' | 'return'; date: string; time?: string; location?: string }>;
   };
-  cautionFeeMetrics: {
-    totalCollected: number;
-    totalRefunded: number;
-    totalPartiallyRefunded: number;
-    totalForfeited: number;
-    pendingReturn: number;
-    refundRate: number;
-    averageRefundDays: number;
-  };
-  expenseMetrics?: {
-    count: number;
-    totalAmount: number;
-    totalVAT: number;
-  };
-  vatMetrics?: {
-    totalVAT: number;
-    inputVAT: number;
-    outputVAT: number;
-    vatPayable: number;
-    vatExempt: number;
-  };
-  revenueBreakdown?: {
-    onlineSalesRevenue: number;
-    onlineRentalRevenue: number;
-  };
-  offlineRevenueBreakdown?: {
-    salesRevenue: number;
-    rentalRevenue: number;
-  };
-  orderTypeBreakdown?: {
-    online: number;
-    offline: number;
-  };
-  dailyMetrics: DailyMetrics[];
-  topProducts: Array<{ name: string; imageUrl?: string; unitsSold: number; revenue: number }>;
-  recentActivities: StoreActivity[];
-  customerMetrics: {
-    newCustomersThisMonth: number;
-    returningCustomers: number;
-    customerRetentionRate: number;
-  };
+  recentOrders: Array<{ id: string; orderNumber: string; customer: string; total: number; status: string; paid: boolean; counted: boolean; channel: string; kind: string; createdAt: string }>;
+  customers: { registered: number; newInRange: number; payingInRange: number; payingAllTime: number; repeatCustomers: number };
+  catalog: { products: number; rentable: number; costumeShow: number; rentLimited: number };
 }
 
-// Function to calculate daily metrics from orders
-function calculateDailyMetrics(orders: any[]): DailyMetrics[] {
-  const dailyMetricsMap = new Map<string, DailyMetrics>();
+const RANGES: Array<{ key: RangeKey; short: string; long: string }> = [
+  { key: '7d', short: '7D', long: 'Last 7 days' },
+  { key: '30d', short: '30D', long: 'Last 30 days' },
+  { key: '90d', short: '90D', long: 'Last 90 days' },
+  { key: 'mtd', short: 'MTD', long: 'This month' },
+  { key: 'ytd', short: 'YTD', long: 'This year' },
+  { key: '12m', short: '12M', long: 'Last 12 months' },
+  { key: 'all', short: 'All', long: 'All time' },
+];
 
-  orders.forEach((order: any) => {
-    const isOnline = !order.isOffline;
-    if (isOnline && order.paymentVerified !== true) return;
+const RANGE_STORAGE_KEY = 'empi_admin_dashboard_range';
+const ORDERS_HREF = '/admin/dashboard?tab=pending';
 
-    const orderDate = order.createdAt || order.created_at || new Date();
-    const dateObj = new Date(orderDate);
-    const dateStr = dateObj.toISOString().split('T')[0];
+/* ───────────────────────────── Small building blocks ───────────────────────────── */
 
-    if (!dailyMetricsMap.has(dateStr)) {
-      dailyMetricsMap.set(dateStr, {
-        date: dateStr,
-        salesRevenue: 0,
-        rentalRevenue: 0,
-        totalRevenue: 0,
-        ordersCount: 0,
-        rentalOrdersCount: 0,
-        salesOrdersCount: 0,
-      });
-    }
-
-    const dailyMetric = dailyMetricsMap.get(dateStr)!;
-    const items = order.items || [];
-
-    let orderSalesRevenue = 0;
-    let orderRentalRevenue = 0;
-    let hasRental = false;
-    let hasSales = false;
-
-    items.forEach((item: any) => {
-      const itemPrice = item.price || 0;
-      const itemQuantity = item.quantity || 1;
-      const itemRevenue = itemPrice * itemQuantity;
-
-      if (item.mode === 'rent' || item.mode === 'rental') {
-        orderRentalRevenue += itemRevenue;
-        hasRental = true;
-      } else if (item.mode === 'buy' || item.mode === 'sale' || item.mode === 'sales') {
-        orderSalesRevenue += itemRevenue;
-        hasSales = true;
-      } else {
-        if (item.rentalDays) {
-          orderRentalRevenue += itemRevenue;
-          hasRental = true;
-        } else {
-          orderSalesRevenue += itemRevenue;
-          hasSales = true;
-        }
-      }
-    });
-
-    if (items.length === 0 && order.total) {
-      orderSalesRevenue = order.total;
-      hasSales = true;
-    }
-
-    dailyMetric.salesRevenue += orderSalesRevenue;
-    dailyMetric.rentalRevenue += orderRentalRevenue;
-    dailyMetric.totalRevenue += orderSalesRevenue + orderRentalRevenue;
-    dailyMetric.ordersCount += 1;
-
-    if (hasRental) dailyMetric.rentalOrdersCount += 1;
-    if (hasSales) dailyMetric.salesOrdersCount += 1;
-  });
-
-  return Array.from(dailyMetricsMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+function InfoTip({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-flex">
+      <button
+        type="button"
+        className="rounded-full text-gray-400 outline-none transition hover:text-gray-600 focus-visible:ring-2 focus-visible:ring-lime-500"
+        aria-label={text}
+      >
+        <Info className="h-3.5 w-3.5" />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-1/2 top-6 z-30 w-64 -translate-x-1/2 rounded-lg bg-gray-900 px-3 py-2 text-[11px] font-normal leading-relaxed text-white opacity-0 shadow-lg transition group-focus-within:opacity-100 group-hover:opacity-100"
+      >
+        {text}
+      </span>
+    </span>
+  );
 }
+
+function DeltaBadge({ value, invert = false, hasPrevious }: { value: number | null; invert?: boolean; hasPrevious: boolean }) {
+  if (!hasPrevious) return null;
+  if (value === null) return <span className="text-[11px] font-medium text-gray-400">No prior data</span>;
+  const rounded = Math.round(value * 10) / 10;
+  if (rounded === 0) return <span className="text-[11px] font-semibold text-gray-500">0% vs prior</span>;
+  const up = rounded > 0;
+  const good = invert ? !up : up;
+  const Icon = up ? ArrowUpRight : ArrowDownRight;
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-[11px] font-semibold ${good ? 'text-emerald-700' : 'text-rose-700'}`}>
+      <Icon className="h-3.5 w-3.5" />
+      {Math.abs(rounded).toLocaleString('en-NG', { maximumFractionDigits: 1 })}%
+      <span className="ml-0.5 font-medium text-gray-400">vs prior</span>
+    </span>
+  );
+}
+
+function KpiCard({
+  label, value, tip, footer, deltaValue, hasPrevious, invertDelta, tone = 'default', children,
+}: {
+  label: string;
+  value: string;
+  tip: string;
+  footer?: React.ReactNode;
+  deltaValue?: number | null;
+  hasPrevious: boolean;
+  invertDelta?: boolean;
+  tone?: 'default' | 'negative';
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col rounded-2xl border border-gray-200/80 bg-white p-5">
+      <div className="flex items-center gap-1.5">
+        <p className="text-xs font-medium text-gray-500">{label}</p>
+        <InfoTip text={tip} />
+      </div>
+      <p className={`mt-2 text-[28px] font-semibold leading-none tracking-tight tabular-nums ${tone === 'negative' ? 'text-rose-700' : 'text-gray-900'}`}>
+        {value}
+      </p>
+      <div className="mt-2 min-h-[18px]">
+        {deltaValue !== undefined && <DeltaBadge value={deltaValue} invert={invertDelta} hasPrevious={hasPrevious} />}
+      </div>
+      {children && <div className="mt-4">{children}</div>}
+      {footer && <div className="mt-auto pt-4 text-xs text-gray-500">{footer}</div>}
+    </div>
+  );
+}
+
+function MixBar({ parts }: { parts: Array<{ key: string; value: number; color: string; label: string }> }) {
+  const total = parts.reduce((s, p) => s + p.value, 0);
+  if (total <= 0) return <div className="h-2 rounded-full bg-gray-100" aria-hidden />;
+  return (
+    <div className="flex h-2 gap-0.5 overflow-hidden rounded-full" role="img" aria-label={parts.map((p) => `${p.label} ${Math.round((p.value / total) * 100)}%`).join(', ')}>
+      {parts.filter((p) => p.value > 0).map((p) => (
+        <span key={p.key} style={{ width: `${(p.value / total) * 100}%`, background: p.color }} />
+      ))}
+    </div>
+  );
+}
+
+function Panel({ title, subtitle, action, children, className = '' }: { title: string; subtitle?: string; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
+  return (
+    <section className={`rounded-2xl border border-gray-200/80 bg-white p-5 sm:p-6 ${className}`}>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+          {subtitle && <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p>}
+        </div>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function PanelLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <Link href={href} className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-gray-600 transition hover:text-gray-900">
+      {children} <ArrowRight className="h-3.5 w-3.5" />
+    </Link>
+  );
+}
+
+function greeting(name?: string) {
+  const h = Number(new Date().toLocaleString('en-GB', { hour: 'numeric', hour12: false, timeZone: 'Africa/Lagos' }));
+  const part = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  const first = (name || '').trim().split(/\s+/)[0];
+  return first ? `${part}, ${first}` : part;
+}
+
+/* ───────────────────────────── Dashboard ───────────────────────────── */
 
 export function EnhancedDashboard() {
-  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const { admin } = useAdmin();
+  const [range, setRange] = useState<RangeKey>('30d');
+  const [data, setData] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [lastSyncTime, setLastSyncTime] = useState<string>('Just now');
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const initialLoadRef = useRef(true);
+  const requestId = useRef(0);
 
-  const fetchAnalytics = async (isManual = false) => {
-    try {
-      if (isManual) setIsRefreshing(true);
-      setError(null);
-
-      const [ordersRes, offlineOrdersRes, productsRes, usersRes, expensesRes] = await Promise.all([
-        fetch("/api/orders/unified?limit=500&t=" + Date.now(), { cache: 'no-store' }),
-        fetch("/api/admin/offline-orders?t=" + Date.now(), { cache: 'no-store' }),
-        fetch("/api/products?t=" + Date.now(), { cache: 'no-store' }),
-        fetch("/api/admin/buyers?t=" + Date.now(), { cache: 'no-store' }),
-        fetch("/api/expenses?t=" + Date.now(), { cache: 'no-store' }),
-      ]);
-
-      const ordersData = ordersRes.ok ? await ordersRes.json() : { orders: [], total: 0 };
-      const offlineOrdersData = offlineOrdersRes.ok ? await offlineOrdersRes.json() : { data: [], pagination: { total: 0 } };
-      const productsData = productsRes.ok ? await productsRes.json() : { data: [], pagination: { total: 0 } };
-      const usersData = usersRes.ok ? await usersRes.json() : { buyers: [], total: 0 };
-      const expensesData = expensesRes.ok ? await expensesRes.json() : { expenses: [] };
-
-      const onlineOrders = ordersData.orders?.filter((o: any) => !o.isOffline) || [];
-      const offlineOrders = offlineOrdersData.data || [];
-      const allOrders = [...onlineOrders, ...offlineOrders];
-      const products = productsData.data || [];
-      const users = usersData.buyers || [];
-      const expensesList = expensesData.expenses || [];
-
-      // Financial Calculation Inline Logic
-      let onlineSales = 0;
-      let onlineRentals = 0;
-      onlineOrders.forEach((order: any) => {
-        if (order.paymentVerified !== true) return;
-        const items = order.items || [];
-        if (items.length === 0) {
-          onlineSales += order.total || order.amount || 0;
-        } else {
-          items.forEach((item: any) => {
-            const itemRevenue = (item.price || 0) * (item.quantity || 1);
-            if (item.mode === 'rent' || item.rentalDays) {
-              onlineRentals += itemRevenue;
-            } else {
-              onlineSales += itemRevenue;
-            }
-          });
-        }
-      });
-
-      let offlineSales = 0;
-      let offlineRentals = 0;
-      offlineOrders.forEach((order: any) => {
-        const items = order.items || [];
-        if (items.length === 0) {
-          offlineSales += order.total || order.amount || 0;
-        } else {
-          items.forEach((item: any) => {
-            const itemRevenue = (item.price || 0) * (item.quantity || 1);
-            if (item.mode === 'rent' || item.rentalDays) {
-              offlineRentals += itemRevenue;
-            } else {
-              offlineSales += itemRevenue;
-            }
-          });
-        }
-      });
-
-      const expenses = expensesList.reduce((sum: number, exp: any) => sum + (exp.amount || 0), 0);
-      const inputVAT = expensesList.reduce((sum: number, exp: any) => sum + (exp.vatAmount || 0), 0);
-      // Output VAT = VAT actually charged on each order (products only - never logistics or caution fees)
-      const outputVAT = [...onlineOrders, ...offlineOrders].reduce((sum: number, o: any) => sum + (o.vat || 0), 0);
-      const vatPayable = Math.max(0, outputVAT - inputVAT);
-
-      const totalOrdersCount = ordersData.total || onlineOrders.length;
-      const totalOfflineOrdersCount = offlineOrdersData.pagination?.total || offlineOrders.length;
-      const totalProductsCount = productsData.pagination?.total || products.length;
-      const totalUsersCount = usersData.total || users.length;
-
-      const onlineCount = onlineOrders.length;
-      const offlineCount = offlineOrders.length;
-      const completedOrders = allOrders.filter((o: any) => o.status === 'completed' || o.status === 'delivered').length;
-      const pendingOrders = allOrders.filter((o: any) => o.status === 'pending' || o.status === 'processing').length;
-
-      const onlineCustomerEmails = new Set(onlineOrders.map((o: any) => o.email).filter(Boolean));
-      const offlineCustomerEmails = new Set(offlineOrders.map((o: any) => o.email).filter(Boolean));
-      const totalCustomerEmails = new Set([...onlineCustomerEmails, ...offlineCustomerEmails]);
-
-      const totalRevenue = onlineSales + onlineRentals + offlineSales + offlineRentals;
-      const grossProfit = totalRevenue - expenses;
-      const netProfit = grossProfit - vatPayable;
-      const profitMargin = totalRevenue > 0 ? ((netProfit / totalRevenue) * 100) : 0;
-      const averageOrderValue = allOrders.length > 0 ? totalRevenue / allOrders.length : 0;
-      const completionRate = allOrders.length > 0 ? (completedOrders / allOrders.length) * 100 : 0;
-
-      // Calculate Top Products/Costumes
-      const productSalesMap = new Map<string, { name: string; imageUrl?: string; unitsSold: number; revenue: number }>();
-      allOrders.forEach((o: any) => {
-        (o.items || []).forEach((item: any) => {
-          const name = item.name || item.title || 'Costume Item';
-          const price = item.price || 0;
-          const qty = item.quantity || 1;
-          const imageUrl = item.image || item.imageUrl || (Array.isArray(item.images) ? item.images[0] : undefined);
-
-          if (!productSalesMap.has(name)) {
-            productSalesMap.set(name, {
-              name,
-              imageUrl,
-              unitsSold: 0,
-              revenue: 0,
-            });
-          }
-          const current = productSalesMap.get(name)!;
-          current.unitsSold += qty;
-          current.revenue += price * qty;
-          if (!current.imageUrl && imageUrl) current.imageUrl = imageUrl;
-        });
-      });
-
-      const topProducts = Array.from(productSalesMap.values())
-        .sort((a, b) => b.revenue - a.revenue)
-        .slice(0, 6);
-
-      // Build Store Activity Stream
-      const recentActivities: StoreActivity[] = [];
-
-      allOrders.slice(0, 8).forEach((o: any) => {
-        const customerName = `${o.firstName || ''} ${o.lastName || ''}`.trim() || o.fullName || o.email || 'Guest Customer';
-        const orderNum = o.orderNumber || (o._id ? `#${o._id.slice(-6)}` : '#ORDER');
-        const isOffline = o.isOffline;
-
-        let badge = 'PENDING';
-        let badgeColor = 'bg-amber-100 text-amber-800 border-amber-200';
-        if (o.status === 'completed' || o.status === 'delivered') {
-          badge = 'COMPLETED';
-          badgeColor = 'bg-emerald-100 text-emerald-800 border-emerald-200';
-        } else if (o.status === 'approved' || o.paymentVerified) {
-          badge = 'VERIFIED';
-          badgeColor = 'bg-blue-100 text-blue-800 border-blue-200';
-        }
-
-        recentActivities.push({
-          id: `ord-${o._id || Math.random()}`,
-          type: isOffline ? 'offline' : 'order',
-          title: `${isOffline ? 'Offline Sale' : 'Online Order'} ${orderNum}`,
-          subtitle: `${customerName} • ₦${Number(o.total || 0).toLocaleString()}`,
-          timestamp: o.createdAt ? new Date(o.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Recently',
-          badge,
-          badgeColor,
-        });
-      });
-
-      users.slice(0, 4).forEach((u: any) => {
-        const name = `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.name || u.email;
-        recentActivities.push({
-          id: `usr-${u._id || Math.random()}`,
-          type: 'user',
-          title: `New Customer Account`,
-          subtitle: `${name} (${u.email || ''})`,
-          timestamp: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Recently',
-          badge: 'USER',
-          badgeColor: 'bg-indigo-100 text-indigo-800 border-indigo-200',
-        });
-      });
-
-      const calculatedAnalytics: Analytics = {
-        summary: {
-          totalRevenue,
-          totalSalesRevenue: onlineSales + offlineSales,
-          totalRentalRevenue: onlineRentals + offlineRentals,
-          totalOrders: totalOrdersCount + totalOfflineOrdersCount,
-          completedOrders,
-          pendingOrders,
-          totalProducts: totalProductsCount,
-          totalCustomers: totalCustomerEmails.size,
-          registeredCustomers: totalUsersCount,
-          guestCustomers: Math.max(0, totalCustomerEmails.size - totalUsersCount),
-          averageOrderValue,
-          completionRate,
-        },
-        cautionFeeMetrics: {
-          totalCollected: 0,
-          totalRefunded: 0,
-          totalPartiallyRefunded: 0,
-          totalForfeited: 0,
-          pendingReturn: 0,
-          refundRate: 0,
-          averageRefundDays: 0,
-        },
-        expenseMetrics: {
-          count: expensesList.length,
-          totalAmount: expenses,
-          totalVAT: inputVAT,
-        },
-        vatMetrics: {
-          totalVAT: outputVAT,
-          inputVAT,
-          outputVAT,
-          vatPayable,
-          vatExempt: 0,
-        },
-        revenueBreakdown: {
-          onlineSalesRevenue: onlineSales,
-          onlineRentalRevenue: onlineRentals,
-        },
-        offlineRevenueBreakdown: {
-          salesRevenue: offlineSales,
-          rentalRevenue: offlineRentals,
-        },
-        orderTypeBreakdown: {
-          online: onlineCount,
-          offline: offlineCount,
-        },
-        dailyMetrics: calculateDailyMetrics(allOrders),
-        topProducts,
-        recentActivities,
-        customerMetrics: {
-          newCustomersThisMonth: users.filter((u: any) => {
-            if (!u.createdAt) return false;
-            const userDate = new Date(u.createdAt);
-            const now = new Date();
-            return userDate.getMonth() === now.getMonth() && userDate.getFullYear() === now.getFullYear();
-          }).length,
-          returningCustomers: totalCustomerEmails.size > 0 ? totalCustomerEmails.size - users.filter((u: any) => {
-            if (!u.createdAt) return false;
-            const userDate = new Date(u.createdAt);
-            const now = new Date();
-            return userDate.getMonth() === now.getMonth() && userDate.getFullYear() === now.getFullYear();
-          }).length : 0,
-          customerRetentionRate: totalCustomerEmails.size > 0 ? ((totalCustomerEmails.size - users.filter((u: any) => {
-            if (!u.createdAt) return false;
-            const userDate = new Date(u.createdAt);
-            const now = new Date();
-            return userDate.getMonth() === now.getMonth() && userDate.getFullYear() === now.getFullYear();
-          }).length) / totalCustomerEmails.size) * 100 : 0,
-        },
-      };
-
-      if (initialLoadRef.current) {
-        setLoading(false);
-        initialLoadRef.current = false;
-      }
-      setAnalytics(calculatedAnalytics);
-      setLastSyncTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-    } catch (err) {
-      console.error('Error fetching analytics:', err);
-      setError(err instanceof Error ? err.message : 'An error occurred');
-      setLoading(false);
-    } finally {
-      setIsRefreshing(false);
-    }
-  };
-
+  // Remember the chosen range for this browser
   useEffect(() => {
-    fetchAnalytics();
-    const interval = setInterval(() => fetchAnalytics(false), 30000);
-    return () => clearInterval(interval);
+    try {
+      const saved = localStorage.getItem(RANGE_STORAGE_KEY) as RangeKey | null;
+      if (saved && RANGES.some((r) => r.key === saved)) setRange(saved);
+    } catch { /* storage unavailable */ }
   }, []);
 
-  if (loading && initialLoadRef.current) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh]">
-        <div className="relative w-16 h-16 mb-4">
-          <div className="absolute inset-0 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin"></div>
-          <Sparkles className="absolute inset-0 m-auto w-6 h-6 text-blue-600 animate-pulse" />
-        </div>
-        <p className="text-gray-600 font-medium">Loading store analytics & real-time metrics...</p>
-      </div>
-    );
-  }
+  const load = useCallback(async (key: RangeKey, mode: 'initial' | 'manual' | 'silent') => {
+    const id = ++requestId.current;
+    if (mode === 'manual') setRefreshing(true);
+    try {
+      const res = await fetch(`/api/admin/analytics?range=${key}`, { cache: 'no-store' });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error || `Request failed (${res.status})`);
+      if (id !== requestId.current) return;
+      setData(body);
+      setError(null);
+    } catch (err) {
+      if (id !== requestId.current) return;
+      if (mode !== 'silent') setError(err instanceof Error ? err.message : 'Could not load the dashboard');
+    } finally {
+      if (id === requestId.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  }, []);
 
-  if (error && !analytics) {
+  useEffect(() => {
+    load(range, data ? 'manual' : 'initial');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range, load]);
+
+  // Quiet refresh every minute while the tab is visible
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') load(range, 'silent');
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [range, load]);
+
+  const chooseRange = (key: RangeKey) => {
+    setRange(key);
+    try { localStorage.setItem(RANGE_STORAGE_KEY, key); } catch { /* ignore */ }
+  };
+
+  if (loading && !data) return <DashboardSkeleton />;
+
+  if (error && !data) {
     return (
-      <div className="flex items-center justify-center min-h-[50vh] p-4">
-        <div className="text-center max-w-md bg-white rounded-2xl p-8 border border-red-100 shadow-xl">
-          <div className="inline-flex items-center justify-center w-16 h-16 mb-4 rounded-full bg-red-50 text-red-600">
-            <AlertCircle className="w-8 h-8" />
-          </div>
-          <h3 className="text-lg font-bold text-gray-900 mb-1">Failed to load Dashboard</h3>
-          <p className="text-gray-500 text-sm mb-6">{error}</p>
+      <div className="flex min-h-[50vh] items-center justify-center p-4">
+        <div className="max-w-md rounded-2xl border border-rose-100 bg-white p-8 text-center">
+          <AlertCircle className="mx-auto h-8 w-8 text-rose-500" />
+          <h3 className="mt-3 text-base font-semibold text-gray-900">The dashboard didn&apos;t load</h3>
+          <p className="mt-1 text-sm text-gray-500">{error}</p>
           <button
-            onClick={() => fetchAnalytics(true)}
-            className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition shadow-md hover:shadow-blue-200 flex items-center justify-center gap-2 mx-auto"
+            onClick={() => { setLoading(true); load(range, 'initial'); }}
+            className="mt-5 inline-flex items-center gap-2 rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-800"
           >
-            <RefreshCw className="w-4 h-4" /> Retry Loading
+            <RefreshCw className="h-4 w-4" /> Try again
           </button>
         </div>
       </div>
     );
   }
 
-  if (!analytics) return null;
+  if (!data) return null;
 
-  const {
-    summary,
-    dailyMetrics,
-    topProducts,
-    recentActivities,
-    customerMetrics,
-    expenseMetrics,
-    vatMetrics,
-    revenueBreakdown,
-    offlineRevenueBreakdown,
-    orderTypeBreakdown
-  } = analytics;
-
-  const totalRevenue = summary?.totalRevenue ?? 0;
-  const totalExpenses = expenseMetrics?.totalAmount ?? 0;
-  const vatPayable = vatMetrics?.vatPayable ?? 0;
-  const grossProfit = totalRevenue - totalExpenses;
-  const netProfit = grossProfit - vatPayable;
-  const profitMargin = totalRevenue > 0 ? ((netProfit / totalRevenue) * 100) : 0;
-
-  const totalSalesRevenue = summary?.totalSalesRevenue ?? 0;
-  const totalRentalRevenue = summary?.totalRentalRevenue ?? 0;
-  const totalOrders = summary?.totalOrders ?? 0;
-  const completedOrders = summary?.completedOrders ?? 0;
-  const pendingOrders = summary?.pendingOrders ?? 0;
-  const totalProducts = summary?.totalProducts ?? 0;
-  const totalCustomers = summary?.totalCustomers ?? 0;
-  const registeredCustomers = summary?.registeredCustomers ?? 0;
-  const guestCustomers = summary?.guestCustomers ?? 0;
-
-  const onlineSalesRevenue = revenueBreakdown?.onlineSalesRevenue ?? 0;
-  const onlineRentalRevenue = revenueBreakdown?.onlineRentalRevenue ?? 0;
-  const offlineSalesRevenue = offlineRevenueBreakdown?.salesRevenue ?? 0;
-  const offlineRentalRevenue = offlineRevenueBreakdown?.rentalRevenue ?? 0;
+  const k = data.kpis;
+  const p = k.previous;
+  const hasPrev = Boolean(p);
+  const ops = data.operations;
+  const revenueParts = SERIES_ORDER.map((key) => ({ key, value: k[key], color: SERIES[key].color, label: SERIES[key].label }));
+  const attention = [
+    { key: 'awaiting', count: ops.awaitingPayment.count, label: 'Awaiting payment', detail: `${naira(ops.awaitingPayment.amount)} to confirm`, icon: CreditCard, href: ORDERS_HREF, tone: 'amber' },
+    { key: 'approve', count: ops.toApprove.count, label: 'Paid · to approve', detail: `${naira(ops.toApprove.amount)} received`, icon: CheckCircle2, href: ORDERS_HREF, tone: 'sky' },
+    { key: 'production', count: ops.inProduction.count, label: 'In production', detail: 'Approved, being prepared', icon: Factory, href: ORDERS_HREF, tone: 'violet' },
+    { key: 'ready', count: ops.readyForDelivery.count, label: 'Ready to hand over', detail: 'Delivery or pickup', icon: Truck, href: '/admin/logistics', tone: 'teal' },
+  ];
+  const toneClass: Record<string, string> = {
+    amber: 'bg-amber-50 text-amber-700',
+    sky: 'bg-sky-50 text-sky-700',
+    violet: 'bg-violet-50 text-violet-700',
+    teal: 'bg-teal-50 text-teal-700',
+  };
+  const maxChannel = Math.max(1, ...data.channels.map((c) => c.revenue));
+  const maxTop = Math.max(1, ...data.topProducts.map((t) => t.revenue));
 
   return (
-    <div className="space-y-8 pb-10">
-      {/* 🟢 TOP CONTROL BAR */}
-      <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="mx-auto max-w-[1440px] space-y-6 pb-10">
+      {/* ── Header ── */}
+      <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <div className="flex items-center gap-2.5 mb-1">
-            <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Store Overview & Analytics</h1>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              Live Sync
-            </span>
-          </div>
-          <p className="text-xs md:text-sm text-gray-500">
-            Real-time business performance, inventory sales, costume rentals, and customer updates.
+          <p className="text-xs font-medium text-gray-500">
+            {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Africa/Lagos' })}
           </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-gray-900 sm:text-[28px]">{greeting(admin?.fullName)}</h1>
+          <p className="mt-1 text-sm text-gray-500">Here&apos;s how EMPI is performing — <span className="font-medium text-gray-700">{data.range.label.toLowerCase()}</span>.</p>
         </div>
 
-        <div className="flex items-center gap-3 self-end md:self-auto">
-          <div className="text-right text-xs text-gray-400 hidden sm:block">
-            <span>Last updated</span>
-            <p className="font-semibold text-gray-600">{lastSyncTime}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex max-w-full overflow-x-auto rounded-xl border border-gray-200 bg-white p-1" role="tablist" aria-label="Date range">
+            {RANGES.map((r) => (
+              <button
+                key={r.key}
+                role="tab"
+                aria-selected={range === r.key}
+                title={r.long}
+                onClick={() => chooseRange(r.key)}
+                className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                  range === r.key ? 'bg-gray-900 text-white shadow-sm' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+                }`}
+              >
+                {r.short}
+              </button>
+            ))}
           </div>
-
           <button
-            onClick={() => fetchAnalytics(true)}
-            disabled={isRefreshing}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-gray-50 hover:bg-gray-100 text-gray-700 text-sm font-semibold rounded-xl border border-gray-200 transition active:scale-95 disabled:opacity-50"
-            title="Refresh analytics data"
+            onClick={() => load(range, 'manual')}
+            disabled={refreshing}
+            className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 disabled:opacity-60"
+            title="Refresh now"
           >
-            <RefreshCw className={`w-4 h-4 text-gray-500 ${isRefreshing ? 'animate-spin' : ''}`} />
-            <span>{isRefreshing ? 'Syncing...' : 'Refresh'}</span>
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Updated {relativeTime(data.generatedAt)}</span>
+            <span className="sm:hidden">Refresh</span>
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* 💎 4 PRIMARY FINANCIAL CARDS */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        {/* Total Revenue */}
-        <div className="relative overflow-hidden bg-linear-to-br from-indigo-600 to-blue-700 text-white rounded-2xl p-6 shadow-lg shadow-indigo-100 group transition hover:-translate-y-1">
-          <div className="absolute -right-4 -bottom-4 w-24 h-24 bg-white/10 rounded-full blur-xl group-hover:scale-150 transition duration-500"></div>
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold uppercase tracking-wider text-indigo-100">Total Revenue</span>
-            <div className="p-2.5 bg-white/15 rounded-xl backdrop-blur-md">
-              <TrendingUp className="w-5 h-5 text-white" />
-            </div>
-          </div>
-          <p className="text-3xl font-extrabold text-white mb-2">₦{totalRevenue.toLocaleString()}</p>
-          <div className="flex items-center gap-2 text-xs text-indigo-100 font-medium">
-            <span className="bg-white/20 px-2 py-0.5 rounded-md">Sales: ₦{(totalSalesRevenue).toLocaleString()}</span>
-            <span className="bg-white/20 px-2 py-0.5 rounded-md">Rentals: ₦{(totalRentalRevenue).toLocaleString()}</span>
-          </div>
+      {error && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800" role="alert">
+          <AlertCircle className="h-4 w-4 shrink-0" /> Couldn&apos;t refresh: {error}. Showing the last loaded figures.
         </div>
+      )}
 
-        {/* Net Profit */}
-        <div className="relative overflow-hidden bg-linear-to-br from-emerald-600 to-teal-700 text-white rounded-2xl p-6 shadow-lg shadow-emerald-100 group transition hover:-translate-y-1">
-          <div className="absolute -right-4 -bottom-4 w-24 h-24 bg-white/10 rounded-full blur-xl group-hover:scale-150 transition duration-500"></div>
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold uppercase tracking-wider text-emerald-100">Net Profit</span>
-            <div className="p-2.5 bg-white/15 rounded-xl backdrop-blur-md">
-              <DollarSign className="w-5 h-5 text-white" />
-            </div>
-          </div>
-          <p className="text-3xl font-extrabold text-white mb-2">₦{netProfit.toLocaleString()}</p>
-          <div className="flex items-center gap-2 text-xs text-emerald-100 font-medium">
-            <span className="bg-emerald-400/30 text-white px-2.5 py-0.5 rounded-md font-bold">
-              {profitMargin.toFixed(1)}% Margin
+      {/* ── Needs attention ── */}
+      <section aria-label="Needs attention" className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {attention.map((a) => {
+          const Icon = a.icon;
+          const idle = a.count === 0;
+          return (
+            <Link
+              key={a.key}
+              href={a.href}
+              className={`group flex items-center gap-3 rounded-2xl border bg-white p-4 transition hover:border-gray-300 hover:shadow-sm ${idle ? 'border-gray-200/80' : 'border-gray-200'}`}
+            >
+              <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${idle ? 'bg-gray-50 text-gray-400' : toneClass[a.tone]}`}>
+                <Icon className="h-5 w-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-baseline gap-2">
+                  <span className={`text-xl font-semibold tabular-nums ${idle ? 'text-gray-400' : 'text-gray-900'}`}>{a.count}</span>
+                  <span className="truncate text-xs font-medium text-gray-700">{a.label}</span>
+                </span>
+                <span className="block truncate text-[11px] text-gray-500">{idle ? 'Nothing waiting' : a.detail}</span>
+              </span>
+              <ArrowRight className="h-4 w-4 shrink-0 text-gray-300 transition group-hover:translate-x-0.5 group-hover:text-gray-600" />
+            </Link>
+          );
+        })}
+      </section>
+
+      {/* ── KPIs ── */}
+      <section aria-label="Key figures" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard
+          label="Revenue"
+          value={naira(k.revenue)}
+          tip="Money earned from paid orders in this period, excluding VAT and refundable caution deposits. Unpaid and cancelled orders are not counted."
+          deltaValue={delta(k.revenue, p?.revenue)}
+          hasPrevious={hasPrev}
+          footer={<span>{k.orders} paid order{k.orders === 1 ? '' : 's'} · avg {naira(k.averageOrderValue)}</span>}
+        >
+          <MixBar parts={revenueParts} />
+          <ul className="mt-2.5 space-y-1">
+            {revenueParts.map((part) => (
+              <li key={part.key} className="flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 text-gray-600">
+                  <span className="h-2 w-2 rounded-sm" style={{ background: part.color }} />{part.label}
+                </span>
+                <span className="font-medium tabular-nums text-gray-900">{naira(part.value)}</span>
+              </li>
+            ))}
+          </ul>
+        </KpiCard>
+
+        <KpiCard
+          label="Net profit"
+          value={naira(k.netProfit)}
+          tone={k.netProfit < 0 ? 'negative' : 'default'}
+          tip="Revenue minus operating expenses and payroll paid in this period. VAT is not deducted again because revenue is already ex-VAT."
+          deltaValue={delta(k.netProfit, p?.netProfit)}
+          hasPrevious={hasPrev}
+          footer={
+            <span>
+              {k.revenue > 0 ? <><span className="font-semibold text-gray-700">{k.margin.toFixed(1)}%</span> margin</> : 'No revenue in this period yet'}
             </span>
-            <span>After expenses & VAT</span>
-          </div>
+          }
+        >
+          <dl className="space-y-1 text-xs">
+            <div className="flex justify-between"><dt className="text-gray-500">Revenue</dt><dd className="tabular-nums text-gray-900">{naira(k.revenue)}</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">− Expenses &amp; payroll</dt><dd className="tabular-nums text-gray-900">{naira(k.totalExpenses)}</dd></div>
+          </dl>
+        </KpiCard>
+
+        <KpiCard
+          label="Expenses"
+          value={naira(k.totalExpenses)}
+          tip="Operating expenses recorded in Finance (ex-VAT) plus payroll marked as paid in this period."
+          deltaValue={delta(k.totalExpenses, p?.totalExpenses)}
+          invertDelta
+          hasPrevious={hasPrev}
+          footer={<Link href="/admin/finance" className="font-semibold text-gray-600 hover:text-gray-900">Open Finance →</Link>}
+        >
+          <dl className="space-y-1 text-xs">
+            <div className="flex justify-between"><dt className="text-gray-500">Operating ({k.expenseCount})</dt><dd className="tabular-nums text-gray-900">{naira(k.operatingExpenses)}</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">Payroll ({k.payrollCount})</dt><dd className="tabular-nums text-gray-900">{naira(k.payrollPaid)}</dd></div>
+          </dl>
+        </KpiCard>
+
+        <KpiCard
+          label="VAT payable"
+          value={naira(k.vatPayable, { decimals: true })}
+          tip="Output VAT charged on paid orders in this period minus input VAT on recorded expenses. VAT is never charged on delivery fees or caution deposits."
+          hasPrevious={hasPrev}
+          footer={<Link href="/admin/finance" className="font-semibold text-gray-600 hover:text-gray-900">VAT details →</Link>}
+        >
+          <dl className="space-y-1 text-xs">
+            <div className="flex justify-between"><dt className="text-gray-500">Output VAT (sales)</dt><dd className="tabular-nums text-gray-900">{naira(k.outputVAT, { decimals: true })}</dd></div>
+            <div className="flex justify-between"><dt className="text-gray-500">− Input VAT (expenses)</dt><dd className="tabular-nums text-gray-900">{naira(k.inputVAT, { decimals: true })}</dd></div>
+          </dl>
+        </KpiCard>
+      </section>
+
+      {/* ── Chart + channels ── */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <div className="xl:col-span-2">
+          <RevenueChart data={data.series} granularity={data.range.granularity} rangeLabel={data.range.label} />
         </div>
 
-        {/* Total Expenses */}
-        <div className="relative overflow-hidden bg-white border border-gray-100 rounded-2xl p-6 shadow-sm group transition hover:-translate-y-1 hover:border-amber-200">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold uppercase tracking-wider text-gray-500">Total Expenses</span>
-            <div className="p-2.5 bg-amber-50 rounded-xl text-amber-600">
-              <Wallet className="w-5 h-5" />
-            </div>
+        <Panel title="Where revenue comes from" subtitle={`Paid orders · ${data.range.label}`}>
+          <ul className="space-y-4">
+            {data.channels.map((c) => (
+              <li key={c.key}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-xs font-medium text-gray-700">{c.label}</span>
+                  <span className="text-sm font-semibold tabular-nums text-gray-900">{naira(c.revenue)}</span>
+                </div>
+                <div className="mt-1.5 h-1.5 rounded-full bg-gray-100">
+                  <div className="h-1.5 rounded-full bg-gray-900" style={{ width: `${(c.revenue / maxChannel) * 100}%` }} />
+                </div>
+                <p className="mt-1 text-[11px] text-gray-500">{c.orders} order{c.orders === 1 ? '' : 's'}</p>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-5 rounded-xl bg-gray-50 p-3 text-[11px] leading-relaxed text-gray-600">
+            <p className="font-semibold text-gray-800">Total collected: {naira(k.grossCollected)}</p>
+            <p>Includes VAT {naira(k.outputVAT)} and refundable caution deposits {naira(k.cautionCollected)}, which are not revenue.</p>
           </div>
-          <p className="text-3xl font-extrabold text-gray-900 mb-2">₦{totalExpenses.toLocaleString()}</p>
-          <p className="text-xs text-gray-500">
-            {expenseMetrics?.count ?? 0} recorded store operating expenses
-          </p>
-        </div>
-
-        {/* VAT Payable */}
-        <div className="relative overflow-hidden bg-white border border-gray-100 rounded-2xl p-6 shadow-sm group transition hover:-translate-y-1 hover:border-purple-200">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold uppercase tracking-wider text-gray-500">VAT Payable</span>
-            <div className="p-2.5 bg-purple-50 rounded-xl text-purple-600">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-          </div>
-          <p className="text-3xl font-extrabold text-gray-900 mb-2">₦{vatPayable.toLocaleString()}</p>
-          <p className="text-xs text-gray-500">
-            Net Tax (Output: ₦{vatMetrics?.outputVAT?.toLocaleString() || 0})
-          </p>
-        </div>
+        </Panel>
       </div>
 
-      {/* 🚀 QUICK ACCESS DASHBOARD SHORTCUTS */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <a
-          href="/admin/dashboard?tab=pending"
-          className="flex items-center gap-3 p-4 bg-white rounded-xl border border-gray-100 shadow-xs hover:shadow-md hover:border-blue-200 transition group"
-        >
-          <div className="p-2.5 rounded-lg bg-blue-50 text-blue-600 group-hover:scale-110 transition">
-            <ShoppingBag className="w-5 h-5" />
-          </div>
-          <div>
-            <p className="text-xs font-bold text-gray-900">Orders Hub</p>
-            <p className="text-[11px] text-gray-500">{totalOrders} total ({pendingOrders} pending)</p>
-          </div>
-        </a>
-
-        <a
-          href="/admin/dashboard?tab=products"
-          className="flex items-center gap-3 p-4 bg-white rounded-xl border border-gray-100 shadow-xs hover:shadow-md hover:border-emerald-200 transition group"
-        >
-          <div className="p-2.5 rounded-lg bg-emerald-50 text-emerald-600 group-hover:scale-110 transition">
-            <Package className="w-5 h-5" />
-          </div>
-          <div>
-            <p className="text-xs font-bold text-gray-900">Costume Catalog</p>
-            <p className="text-[11px] text-gray-500">{totalProducts} active products</p>
-          </div>
-        </a>
-
-        <a
-          href="/admin/dashboard?tab=users"
-          className="flex items-center gap-3 p-4 bg-white rounded-xl border border-gray-100 shadow-xs hover:shadow-md hover:border-purple-200 transition group"
-        >
-          <div className="p-2.5 rounded-lg bg-purple-50 text-purple-600 group-hover:scale-110 transition">
-            <Users className="w-5 h-5" />
-          </div>
-          <div>
-            <p className="text-xs font-bold text-gray-900">Customer Base</p>
-            <p className="text-[11px] text-gray-500">{registeredCustomers} registered users</p>
-          </div>
-        </a>
-
-        <a
-          href="/invoices"
-          className="flex items-center gap-3 p-4 bg-white rounded-xl border border-gray-100 shadow-xs hover:shadow-md hover:border-amber-200 transition group"
-        >
-          <div className="p-2.5 rounded-lg bg-amber-50 text-amber-600 group-hover:scale-110 transition">
-            <Receipt className="w-5 h-5" />
-          </div>
-          <div>
-            <p className="text-xs font-bold text-gray-900">Financial Invoices</p>
-            <p className="text-[11px] text-gray-500">VAT & payment receipts</p>
-          </div>
-        </a>
-      </div>
-
-      {/* 📊 REVENUE BREAKDOWN & STORE METRICS GRID */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* LEFT COLUMN: Revenue breakdown & Charts */}
-        <div className="lg:col-span-2 space-y-8">
-          {/* Revenue Source Cards */}
-          <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-xs">
-            <h2 className="text-base font-bold text-gray-900 mb-4 flex items-center gap-2">
-              <Layers className="w-4 h-4 text-blue-600" />
-              Revenue Channel Distribution
-            </h2>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <div className="bg-blue-50/60 p-4 rounded-xl border border-blue-100">
-                <span className="text-xs font-semibold text-blue-700">Online Sales</span>
-                <p className="text-lg font-bold text-blue-950 mt-1">₦{onlineSalesRevenue.toLocaleString()}</p>
-                <span className="text-[11px] text-blue-600">{orderTypeBreakdown?.online || 0} web orders</span>
-              </div>
-              <div className="bg-teal-50/60 p-4 rounded-xl border border-teal-100">
-                <span className="text-xs font-semibold text-teal-700">Online Rentals</span>
-                <p className="text-lg font-bold text-teal-950 mt-1">₦{onlineRentalRevenue.toLocaleString()}</p>
-                <span className="text-[11px] text-teal-600">Web costume rentals</span>
-              </div>
-              <div className="bg-amber-50/60 p-4 rounded-xl border border-amber-100">
-                <span className="text-xs font-semibold text-amber-700">Offline Sales</span>
-                <p className="text-lg font-bold text-amber-950 mt-1">₦{offlineSalesRevenue.toLocaleString()}</p>
-                <span className="text-[11px] text-amber-600">{orderTypeBreakdown?.offline || 0} walk-in/POS</span>
-              </div>
-              <div className="bg-orange-50/60 p-4 rounded-xl border border-orange-100">
-                <span className="text-xs font-semibold text-orange-700">Offline Rentals</span>
-                <p className="text-lg font-bold text-orange-950 mt-1">₦{offlineRentalRevenue.toLocaleString()}</p>
-                <span className="text-[11px] text-orange-600">In-store rentals</span>
-              </div>
+      {/* ── Recent orders + rental schedule ── */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <Panel title="Latest orders" subtitle="Most recent across website, invoices and walk-ins" action={<PanelLink href={ORDERS_HREF}>All orders</PanelLink>} className="xl:col-span-2">
+          {data.recentOrders.length === 0 ? (
+            <p className="py-8 text-center text-sm text-gray-500">No orders yet.</p>
+          ) : (
+            <div className="-mx-5 overflow-x-auto sm:-mx-6">
+              <table className="w-full min-w-[620px] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                    <th className="px-5 py-2 sm:px-6">Order</th>
+                    <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Type</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-5 py-2 text-right sm:px-6">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {data.recentOrders.map((o) => {
+                    const meta = orderStatusMeta(o.status, o.paid, o.channel);
+                    return (
+                      <tr key={`${o.channel}-${o.id}`} className="hover:bg-gray-50/70">
+                        <td className="px-5 py-3 sm:px-6">
+                          <Link href={ORDERS_HREF} className="block max-w-[180px] truncate font-medium text-gray-900 hover:underline" title={o.orderNumber}>{o.orderNumber}</Link>
+                          <span className="text-[11px] text-gray-400">{CHANNEL_LABEL[o.channel] || o.channel} · {relativeTime(o.createdAt)}</span>
+                        </td>
+                        <td className="max-w-[180px] truncate px-3 py-3 text-gray-700" title={o.customer}>{o.customer}</td>
+                        <td className="px-3 py-3 text-xs text-gray-600">{KIND_LABEL[o.kind] || o.kind}</td>
+                        <td className="px-3 py-3">
+                          <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${meta.className}`}>{meta.label}</span>
+                        </td>
+                        <td className="px-5 py-3 text-right font-semibold tabular-nums text-gray-900 sm:px-6">{naira(o.total)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          </div>
+          )}
+        </Panel>
 
-          {/* Main Revenue Chart */}
-          <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-xs">
-            <SalesRentalsChart
-              data={dailyMetrics.map((m) => ({
-                name: m.date,
-                sales: m.salesRevenue,
-                rentals: m.rentalRevenue,
-                total: m.totalRevenue,
-              }))}
-              title="Daily Sales vs Rental Revenue (30 Days)"
-            />
-          </div>
-
-          {/* Cumulative & Trend Charts */}
-          <div className="grid grid-cols-1 gap-6">
-            <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-xs">
-              <RevenueTrendChart
-                data={dailyMetrics.map((m) => ({
-                  name: m.date,
-                  sales: m.salesRevenue,
-                  rentals: m.rentalRevenue,
-                  total: m.totalRevenue,
-                }))}
-                title="Revenue Trend & Dynamics"
-              />
+        <Panel title="Rental schedule" subtitle="Pickups and returns in the next 7 days" action={<PanelLink href="/admin/logistics">Logistics</PanelLink>}>
+          {ops.rentalEvents.length === 0 ? (
+            <div className="flex flex-col items-center py-8 text-center">
+              <CalendarClock className="h-6 w-6 text-gray-300" />
+              <p className="mt-2 text-sm font-medium text-gray-600">Nothing scheduled</p>
+              <p className="text-xs text-gray-400">Upcoming rental pickups and returns show here.</p>
             </div>
-            <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-xs">
-              <OrdersCountChart
-                data={dailyMetrics.map((m) => ({
-                  name: m.date,
-                  sales: m.salesOrdersCount,
-                  rentals: m.rentalOrdersCount,
-                  total: m.ordersCount,
-                }))}
-                title="Daily Volume of Costume Orders & Rentals"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN: Real-Time Activity & Top Costumes */}
-        <div className="space-y-8">
-          {/* ⚡ REAL-TIME STORE ACTIVITY FEED */}
-          <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-xs">
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-2">
-                <Activity className="w-5 h-5 text-blue-600 animate-pulse" />
-                <h3 className="font-bold text-gray-900 text-base">Live Activity Feed</h3>
-              </div>
-              <span className="text-xs text-gray-400 font-medium">Real-time stream</span>
-            </div>
-
-            <div className="space-y-4 max-h-[460px] overflow-y-auto pr-1">
-              {recentActivities.length === 0 ? (
-                <p className="text-xs text-gray-400 text-center py-6">No recent activities recorded</p>
-              ) : (
-                recentActivities.map((act) => (
-                  <div
-                    key={act.id}
-                    className="flex items-start gap-3 p-3 rounded-xl bg-gray-50/70 hover:bg-gray-100/80 transition border border-gray-100/80"
-                  >
-                    <div className="p-2 rounded-lg bg-white border border-gray-200 text-gray-700 shrink-0 mt-0.5">
-                      {act.type === 'user' ? (
-                        <UserPlus className="w-4 h-4 text-blue-600" />
-                      ) : act.type === 'offline' ? (
-                        <Receipt className="w-4 h-4 text-amber-600" />
-                      ) : (
-                        <ShoppingBag className="w-4 h-4 text-emerald-600" />
-                      )}
+          ) : (
+            <ul className="space-y-2.5">
+              {ops.rentalEvents.map((e) => {
+                const [y, m, d] = e.date.split('-').map(Number);
+                const dt = new Date(Date.UTC(y, m - 1, d));
+                return (
+                  <li key={`${e.type}-${e.id}`} className="flex items-center gap-3 rounded-xl border border-gray-100 p-2.5">
+                    <div className="flex w-11 shrink-0 flex-col items-center rounded-lg bg-gray-50 py-1">
+                      <span className="text-[10px] font-semibold uppercase text-gray-500">{dt.toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' })}</span>
+                      <span className="text-base font-semibold leading-tight tabular-nums text-gray-900">{d}</span>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1 mb-0.5">
-                        <p className="text-xs font-bold text-gray-900 truncate">{act.title}</p>
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border shrink-0 ${act.badgeColor}`}>
-                          {act.badge}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-gray-500 truncate">{act.subtitle}</p>
-                      <p className="text-[10px] text-gray-400 mt-1 flex items-center gap-1">
-                        <Clock className="w-3 h-3 text-gray-400" />
-                        {act.timestamp}
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs font-semibold text-gray-900">{e.customer}</p>
+                      <p className="truncate text-[11px] text-gray-500">
+                        {e.orderNumber}{e.location ? ` · ${e.location === 'iba' ? 'Iba' : e.location === 'surulere' ? 'Surulere' : e.location}` : ''}{e.time ? ` · ${e.time}` : ''}
                       </p>
                     </div>
+                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset ${e.type === 'pickup' ? 'bg-blue-50 text-blue-700 ring-blue-600/20' : 'bg-orange-50 text-orange-700 ring-orange-600/20'}`}>
+                      {e.type === 'pickup' ? 'Pickup' : 'Return'}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Panel>
+      </div>
+
+      {/* ── Top costumes + customers/catalog ── */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <Panel title="Top costumes" subtitle={`By revenue · ${data.range.label}`} action={<PanelLink href="/admin/dashboard?tab=products">Products</PanelLink>} className="xl:col-span-2">
+          {data.topProducts.length === 0 ? (
+            <div className="flex flex-col items-center py-8 text-center">
+              <Crown className="h-6 w-6 text-gray-300" />
+              <p className="mt-2 text-sm font-medium text-gray-600">No paid sales or rentals in this period</p>
+            </div>
+          ) : (
+            <ol className="space-y-3">
+              {data.topProducts.map((t, i) => (
+                <li key={t.key} className="flex items-center gap-3">
+                  <span className="w-4 shrink-0 text-right text-xs font-semibold tabular-nums text-gray-400">{i + 1}</span>
+                  <div className="h-10 w-10 shrink-0 overflow-hidden rounded-lg border border-gray-100 bg-gray-50">
+                    {t.image ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={t.image} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    ) : (
+                      <Package className="m-2.5 h-5 w-5 text-gray-300" />
+                    )}
                   </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* 👑 TOP PERFORMING PRODUCTS LEADERBOARD */}
-          <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-xs">
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-2">
-                <Award className="w-5 h-5 text-amber-500" />
-                <h3 className="font-bold text-gray-900 text-base">Top Performing Costumes</h3>
-              </div>
-              <span className="text-xs text-gray-400 font-medium">By Revenue</span>
-            </div>
-
-            <div className="space-y-3">
-              {topProducts.length === 0 ? (
-                <p className="text-xs text-gray-400 text-center py-6">No sales data available yet</p>
-              ) : (
-                topProducts.map((prod, idx) => (
-                  <div
-                    key={idx}
-                    className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:border-gray-200 transition"
-                  >
-                    <div className="w-10 h-10 rounded-lg bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center text-gray-400 font-bold text-xs border border-gray-200">
-                      {prod.imageUrl ? (
-                        <img src={prod.imageUrl} alt={prod.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <span>#{idx + 1}</span>
-                      )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <p className="truncate text-sm font-medium text-gray-900" title={t.name}>{t.name}</p>
+                      <p className="shrink-0 text-sm font-semibold tabular-nums text-gray-900">{naira(t.revenue)}</p>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-bold text-gray-900 truncate">{prod.name}</p>
-                      <p className="text-[11px] text-gray-500">{prod.unitsSold} unit(s) ordered</p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-xs font-extrabold text-emerald-700">₦{prod.revenue.toLocaleString()}</p>
+                    <div className="mt-1 flex items-center gap-3">
+                      <div className="h-1.5 flex-1 rounded-full bg-gray-100">
+                        <div className="h-1.5 rounded-full" style={{ width: `${(t.revenue / maxTop) * 100}%`, background: SERIES.sales.color }} />
+                      </div>
+                      <span className="shrink-0 text-[11px] text-gray-500">
+                        {[t.soldUnits ? `${t.soldUnits} sold` : '', t.rentedUnits ? `${t.rentedUnits} rented` : ''].filter(Boolean).join(' · ')}
+                      </span>
                     </div>
                   </div>
-                ))
-              )}
-            </div>
-          </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </Panel>
 
-          {/* 👥 CUSTOMER OVERVIEW CARD */}
-          <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-xs">
-            <h3 className="font-bold text-gray-900 text-base mb-4 flex items-center gap-2">
-              <Users className="w-4 h-4 text-purple-600" />
-              Customer Demographics
-            </h3>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between p-3 rounded-xl bg-purple-50/60 border border-purple-100">
-                <span className="text-xs font-semibold text-purple-900">Total Buyers</span>
-                <span className="text-sm font-extrabold text-purple-950">{totalCustomers}</span>
-              </div>
-              <div className="flex items-center justify-between p-3 rounded-xl bg-blue-50/60 border border-blue-100">
-                <span className="text-xs font-semibold text-blue-900">Registered Accounts</span>
-                <span className="text-sm font-extrabold text-blue-950">{registeredCustomers}</span>
-              </div>
-              <div className="flex items-center justify-between p-3 rounded-xl bg-gray-50 border border-gray-200">
-                <span className="text-xs font-semibold text-gray-700">Guest Checkout</span>
-                <span className="text-sm font-extrabold text-gray-900">{guestCustomers}</span>
-              </div>
+        <div className="space-y-4">
+          <Panel title="Customers" action={<PanelLink href="/admin/dashboard?tab=users">View</PanelLink>}>
+            <dl className="grid grid-cols-2 gap-3">
+              {[
+                { label: 'Registered accounts', value: data.customers.registered, icon: Users },
+                { label: `New sign-ups`, value: data.customers.newInRange, icon: UserPlus },
+                { label: 'Paying customers', value: data.customers.payingInRange, icon: Sparkles },
+                { label: 'Repeat customers', value: data.customers.repeatCustomers, icon: Repeat },
+              ].map((s) => {
+                const Icon = s.icon;
+                return (
+                  <div key={s.label} className="rounded-xl bg-gray-50 p-3">
+                    <dt className="flex items-center gap-1.5 text-[11px] font-medium text-gray-500"><Icon className="h-3.5 w-3.5" />{s.label}</dt>
+                    <dd className="mt-1 text-lg font-semibold tabular-nums text-gray-900">{s.value.toLocaleString()}</dd>
+                  </div>
+                );
+              })}
+            </dl>
+            <p className="mt-3 text-[11px] text-gray-400">New sign-ups and paying customers are for {data.range.label.toLowerCase()}; the rest are all-time.</p>
+          </Panel>
+
+          <Panel title="Catalogue" action={<PanelLink href="/admin/dashboard?tab=products">Manage</PanelLink>}>
+            <dl className="space-y-2 text-xs">
+              <div className="flex justify-between"><dt className="text-gray-500">Products</dt><dd className="font-semibold tabular-nums text-gray-900">{data.catalog.products}</dd></div>
+              <div className="flex justify-between"><dt className="text-gray-500">Available to rent</dt><dd className="font-semibold tabular-nums text-gray-900">{data.catalog.rentable}</dd></div>
+              <div className="flex justify-between"><dt className="text-gray-500">Costume Show pieces <span className="text-gray-400">(1 per rental)</span></dt><dd className="font-semibold tabular-nums text-gray-900">{data.catalog.costumeShow}</dd></div>
+              <div className="flex justify-between"><dt className="text-gray-500">With a rental stock limit</dt><dd className="font-semibold tabular-nums text-gray-900">{data.catalog.rentLimited}</dd></div>
+            </dl>
+            <div className="mt-3 flex items-center gap-2 rounded-xl bg-gray-50 p-2.5 text-[11px] text-gray-600">
+              <PackageCheck className="h-4 w-4 shrink-0 text-gray-400" />
+              Set &ldquo;Units available to rent&rdquo; on a product to stop customers renting more than you own.
             </div>
-          </div>
+          </Panel>
         </div>
       </div>
+
+      <p className="flex items-center gap-1.5 text-[11px] text-gray-400">
+        <Clock className="h-3.5 w-3.5" />
+        Figures use Lagos time. Revenue counts paid orders only and excludes VAT and caution deposits. {ops.deliveredInRange.count} order{ops.deliveredInRange.count === 1 ? '' : 's'} delivered in this period.
+      </p>
+    </div>
+  );
+}
+
+function DashboardSkeleton() {
+  return (
+    <div className="mx-auto max-w-[1440px] animate-pulse space-y-6" aria-busy="true" aria-label="Loading dashboard">
+      <div className="flex items-end justify-between">
+        <div className="space-y-2"><div className="h-3 w-40 rounded bg-gray-200" /><div className="h-7 w-64 rounded bg-gray-200" /></div>
+        <div className="h-9 w-80 rounded-xl bg-gray-200" />
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="h-[72px] rounded-2xl bg-gray-200/70" />)}</div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="h-56 rounded-2xl bg-gray-200/70" />)}</div>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3"><div className="h-80 rounded-2xl bg-gray-200/70 xl:col-span-2" /><div className="h-80 rounded-2xl bg-gray-200/70" /></div>
     </div>
   );
 }

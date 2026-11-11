@@ -128,7 +128,7 @@ function AdminDashboardContent() {
   }
 
   return (
-    <div className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100 pb-6 md:pb-0">
+    <div className="min-h-screen bg-gray-50 pb-6 md:pb-0">
       <main className="px-4 sm:px-6 lg:px-8 py-6 md:py-8 w-full pb-6 md:pb-0">
         {activeTab === 'dashboard' && canViewTab('dashboard') && (
           <div className="animate-fadeIn">

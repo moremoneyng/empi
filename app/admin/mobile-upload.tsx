@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import Image from "next/image";
 import { Upload, X, CheckCircle2, Bell, Clock, Zap, Plus, Check } from "lucide-react";
 import { ProductVideoManager } from "./components/ProductVideoManager";
+import { RentLimitField } from "./components/RentLimitField";
 
 export interface NestedSizeEntry {
   size: string;
@@ -87,6 +88,7 @@ interface ProductForm {
   availableForBuy: boolean;
   availableForRent: boolean;
   isCostumeShow?: boolean;
+  maxRentQuantity?: number | null;
   imageFiles: File[];
   imagePreviews: string[];
   videoUrls: string[]; // already uploaded to Cloudinary
@@ -139,6 +141,7 @@ export default function MobileAdminUpload() {
     availableForBuy: true,
     availableForRent: true,
     isCostumeShow: false,
+    maxRentQuantity: null,
     imageFiles: [],
     imagePreviews: [],
     videoUrls: [],
@@ -457,6 +460,7 @@ export default function MobileAdminUpload() {
         availableForBuy: form.availableForBuy,
         availableForRent: form.availableForRent,
         isCostumeShow: form.isCostumeShow || false,
+        maxRentQuantity: form.isCostumeShow ? null : form.maxRentQuantity ?? null,
       };
 
       console.log("📤 Creating product...");
@@ -542,6 +546,7 @@ export default function MobileAdminUpload() {
         availableForBuy: true,
         availableForRent: true,
         isCostumeShow: false,
+        maxRentQuantity: null,
         imageFiles: [],
         imagePreviews: [],
         videoUrls: [],
@@ -1121,6 +1126,13 @@ export default function MobileAdminUpload() {
                   <p className="text-xs text-gray-500">Show this product in the Costume Show special collection</p>
                 </div>
               </label>
+
+              <RentLimitField
+                value={form.maxRentQuantity}
+                onChange={(v) => setForm({ ...form, maxRentQuantity: v })}
+                isCostumeShow={form.isCostumeShow || false}
+                availableForRent={form.availableForRent}
+              />
 
               {!form.availableForBuy && !form.availableForRent && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-lg">

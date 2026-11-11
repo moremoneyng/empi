@@ -23,7 +23,7 @@ import { calculateVat, formatVatPercent } from "@/lib/vat";
 import { useVatSettings } from "@/lib/hooks/useVatSettings";
 
 export default function CartPage() {
-  const { items, removeItem, updateQuantity, clearCart, total, deliveryState, setDeliveryState, rentalSchedule, setRentalSchedule, deliveryQuote, setDeliveryQuote, cautionFee: contextCautionFee } = useCart();
+  const { items, removeItem, updateQuantity, clearCart, total, deliveryState, setDeliveryState, rentalSchedule, setRentalSchedule, deliveryQuote, setDeliveryQuote, cautionFee: contextCautionFee, getRentLimit, getRentedQuantity } = useCart();
   const { buyer, updateProfile } = useBuyer();
   const router = useRouter();
 
@@ -351,10 +351,21 @@ export default function CartPage() {
                                   <Minus className="h-4 w-4" />
                                 </button>
                                 <span className="px-4 py-2 font-bold text-gray-900 min-w-14 text-center">{item.quantity}</span>
-                                <button onClick={() => updateQuantity(item.id, item.mode, item.quantity + 1, item.color, item.size)} className="p-2 text-gray-600 hover:bg-gray-50 hover:text-gray-900 transition">
+                                <button
+                                  onClick={() => updateQuantity(item.id, item.mode, item.quantity + 1, item.color, item.size)}
+                                  disabled={getRentLimit(item.id) !== null && getRentedQuantity(item.id) >= (getRentLimit(item.id) ?? Infinity)}
+                                  aria-label="Increase quantity"
+                                  title={getRentLimit(item.id) !== null && getRentedQuantity(item.id) >= (getRentLimit(item.id) ?? Infinity) ? `Rental limit reached (max ${getRentLimit(item.id)} per order)` : undefined}
+                                  className="p-2 text-gray-600 hover:bg-gray-50 hover:text-gray-900 transition disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                >
                                   <Plus className="h-4 w-4" />
                                 </button>
                               </div>
+                              {getRentLimit(item.id) !== null && (
+                                <p className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+                                  Max {getRentLimit(item.id)} per order
+                                </p>
+                              )}
                               <div className="text-right">
                                 <p className="text-xs text-gray-600 mb-1">{item.quantity} × {formatPrice(item.price)}/day × {rentalSchedule?.rentalDays || 1} days</p>
                                 <p className="text-2xl font-bold text-lime-600">{formatPrice((item.price * item.quantity * (rentalSchedule?.rentalDays || 1)))}</p>

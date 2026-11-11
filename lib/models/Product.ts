@@ -38,6 +38,9 @@ export interface IProduct extends Document {
   availableForBuy?: boolean; // Can be purchased
   availableForRent?: boolean; // Can be rented
   isCostumeShow?: boolean; // Featured in the costume show
+  // Max units of this costume a customer can rent in one order (unset/0 = no limit).
+  // Costume Show products are always limited to 1 (see lib/rentalLimits.ts).
+  maxRentQuantity?: number | null;
   // Delivery metadata
   deliverySize?: 'SMALL' | 'MEDIUM' | 'LARGE';
   weight?: number; // in kg
@@ -101,6 +104,7 @@ const productSchema = new Schema<IProduct>(
     availableForBuy: { type: Boolean, default: true },
     availableForRent: { type: Boolean, default: true },
     isCostumeShow: { type: Boolean, default: false },
+    maxRentQuantity: { type: Number, default: null, min: 0 },
     // Delivery metadata
     deliverySize: { type: String, enum: ['SMALL', 'MEDIUM', 'LARGE'], default: 'MEDIUM' },
     weight: { type: Number, default: 0.5 }, // in kg

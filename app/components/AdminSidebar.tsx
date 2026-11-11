@@ -1,391 +1,335 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import Image from "next/image";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Users,
   ShoppingBag,
   Package,
+  PackagePlus,
   Truck,
-  TrendingUp,
+  LineChart,
   WalletCards,
   FileText,
   Mail,
   Settings,
   LogOut,
-  ChevronRight
+  PanelLeftClose,
+  PanelLeftOpen,
+  Menu,
+  X,
+  ExternalLink,
 } from "lucide-react";
 import { useAdmin } from "@/app/context/AdminContext";
 import { hasPermission } from "@/lib/permissions";
 import type { Permission } from "@/lib/permissions";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuItem,
-  SidebarMenuButton,
-  useSidebar,
-  SidebarTrigger,
-} from "@/components/ui/sidebar";
-import { useEffect, useState } from "react";
+import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader, useSidebar } from "@/components/ui/sidebar";
 
-interface SidebarItem {
+type BadgeKey = "pendingOrders" | "registeredCustomers" | "totalProducts";
+
+interface NavItem {
   name: string;
   href: string;
-  icon: React.ReactNode;
+  icon: React.ComponentType<{ className?: string }>;
   tab?: string;
-  permission?: string;
-  roles?: string[];
-  badgeKey?: 'pendingOrders' | 'pendingInvoices' | 'totalProducts' | 'registeredCustomers';
-  badgeColor?: string;
+  permission?: Permission;
+  badgeKey?: BadgeKey;
+  badgeTone?: "alert" | "muted";
+  exact?: boolean;
 }
 
-interface SidebarGroup {
+interface NavGroup {
   title: string;
-  items: SidebarItem[];
+  items: NavItem[];
 }
 
-const sidebarGroups: SidebarGroup[] = [
+const NAV: NavGroup[] = [
   {
     title: "Overview",
     items: [
-      {
-        name: "Dashboard",
-        href: "/admin/dashboard?tab=dashboard",
-        icon: <LayoutDashboard className="h-4.5 w-4.5" />,
-        tab: 'dashboard',
-        permission: 'view_dashboard',
-      },
-      {
-        name: "Users",
-        href: "/admin/dashboard?tab=users",
-        icon: <Users className="h-4.5 w-4.5" />,
-        tab: 'users',
-        permission: 'view_users',
-        badgeKey: 'registeredCustomers',
-        badgeColor: 'bg-gray-100 text-gray-600 border-gray-200 font-medium',
-      },
-    ]
+      { name: "Dashboard", href: "/admin/dashboard?tab=dashboard", icon: LayoutDashboard, tab: "dashboard", permission: "view_dashboard" },
+    ],
   },
   {
-    title: "Commerce & Inventory",
+    title: "Sales",
     items: [
-      {
-        name: "Orders",
-        href: "/admin/dashboard?tab=pending",
-        icon: <ShoppingBag className="h-4.5 w-4.5" />,
-        tab: 'pending',
-        permission: 'view_orders',
-        roles: ['super_admin', 'admin', 'logistics_admin', 'finance_admin', 'sales_admin'],
-        badgeKey: 'pendingOrders',
-        badgeColor: 'bg-amber-500/10 text-amber-700 border-amber-500/20 font-bold',
-      },
-      {
-        name: "Products",
-        href: "/admin/dashboard?tab=products",
-        icon: <Package className="h-4.5 w-4.5" />,
-        tab: 'products',
-        permission: 'view_products',
-        roles: ['super_admin', 'admin', 'sales_admin'],
-        badgeKey: 'totalProducts',
-        badgeColor: 'bg-gray-100 text-gray-600 border-gray-200 font-medium',
-      },
-      {
-        name: "Logistics",
-        href: "/admin/logistics",
-        icon: <Truck className="h-4.5 w-4.5" />,
-        permission: 'view_logistics',
-        roles: ['super_admin', 'admin', 'logistics_admin', 'finance_admin'],
-      },
-    ]
+      { name: "Orders", href: "/admin/dashboard?tab=pending", icon: ShoppingBag, tab: "pending", permission: "view_orders", badgeKey: "pendingOrders", badgeTone: "alert" },
+      { name: "Customers", href: "/admin/dashboard?tab=users", icon: Users, tab: "users", permission: "view_users", badgeKey: "registeredCustomers", badgeTone: "muted" },
+      { name: "Invoices", href: "/admin/invoices", icon: FileText, permission: "view_invoices" },
+    ],
   },
   {
-    title: "Finance & Payroll",
+    title: "Catalogue",
     items: [
-      {
-        name: "Finance",
-        href: "/admin/finance",
-        icon: <TrendingUp className="h-4.5 w-4.5" />,
-        permission: 'view_finance',
-        roles: ['super_admin', 'admin', 'finance_admin'],
-      },
-      {
-        name: "Payroll",
-        href: "/admin/payroll",
-        icon: <WalletCards className="h-4.5 w-4.5" />,
-        permission: "view_finance",
-        roles: ["super_admin", "admin", "finance_admin"],
-      },
-      {
-        name: "Invoices",
-        href: "/admin/invoices",
-        icon: <FileText className="h-4.5 w-4.5" />,
-        permission: 'view_invoices',
-        roles: ['super_admin', 'admin', 'finance_admin', 'sales_admin'],
-        badgeKey: 'pendingInvoices',
-        badgeColor: 'bg-blue-500/10 text-blue-700 border-blue-500/20 font-bold',
-      },
-    ]
+      { name: "Products", href: "/admin/dashboard?tab=products", icon: Package, tab: "products", permission: "view_products", badgeKey: "totalProducts", badgeTone: "muted" },
+      { name: "Add product", href: "/admin/upload", icon: PackagePlus, permission: "view_products", exact: true },
+    ],
   },
   {
-    title: "System & Comms",
+    title: "Operations",
     items: [
-      {
-        name: "Mail Room",
-        href: "/admin/mail-room",
-        icon: <Mail className="h-4.5 w-4.5" />,
-        permission: 'view_mail_room',
-        roles: ['super_admin', 'admin', 'finance_admin', 'logistics_admin', 'sales_admin'],
-      },
-      {
-        name: "Settings",
-        href: "/admin/settings",
-        icon: <Settings className="h-4.5 w-4.5" />,
-        permission: 'view_settings',
-        roles: ['super_admin'],
-      },
-    ]
-  }
+      { name: "Logistics", href: "/admin/logistics", icon: Truck, permission: "view_logistics" },
+      { name: "Mail Room", href: "/admin/mail-room", icon: Mail, permission: "view_mail_room" },
+    ],
+  },
+  {
+    title: "Finance",
+    items: [
+      { name: "Finance & VAT", href: "/admin/finance", icon: LineChart, permission: "view_finance" },
+      { name: "Payroll", href: "/admin/payroll", icon: WalletCards, permission: "view_finance" },
+    ],
+  },
+  {
+    title: "System",
+    items: [
+      { name: "Settings", href: "/admin/settings", icon: Settings, permission: "view_settings" },
+    ],
+  },
 ];
+
+const ROLE_LABEL: Record<string, string> = {
+  super_admin: "Super Admin",
+  admin: "Admin",
+  finance_admin: "Finance",
+  logistics_admin: "Logistics",
+  sales_admin: "Sales",
+};
+
+function initials(name?: string) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "A";
+  return (parts[0][0] + (parts[1]?.[0] || "")).toUpperCase();
+}
 
 export function AdminSidebar() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { state, isMobile, setOpenMobile } = useSidebar();
+  const { state, isMobile, openMobile, setOpenMobile, toggleSidebar } = useSidebar();
   const { logout, admin } = useAdmin();
-  const [stats, setStats] = useState({ pendingInvoices: 0, pendingOrders: 0, totalOrders: 0, totalProducts: 0, registeredCustomers: 0 });
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [badges, setBadges] = useState<Record<BadgeKey, number>>({ pendingOrders: 0, registeredCustomers: 0, totalProducts: 0 });
+  // Tab clicked in this session; only trusted while the URL hasn't changed since the click
+  const [tabOverride, setTabOverride] = useState<{ tab: string; search: string } | null>(null);
 
+  const collapsed = !isMobile && state === "collapsed";
+  const onDashboard = pathname === "/admin" || pathname === "/admin/dashboard";
+  const search = searchParams?.toString() || "";
+  const currentTab = (tabOverride && tabOverride.search === search ? tabOverride.tab : null) || searchParams?.get("tab") || "dashboard";
+
+  // Keep in step with tab changes made inside the dashboard
   useEffect(() => {
-    if (pathname === "/admin/dashboard" || pathname === "/admin") {
-      const currentTab = searchParams?.get('tab') || 'dashboard';
-      setActiveTab(currentTab);
-    }
-  }, [pathname, searchParams]);
+    const onTab = (e: Event) => {
+      const tab = (e as CustomEvent).detail?.tab;
+      if (tab) setTabOverride({ tab, search: window.location.search.replace(/^\?/, "") });
+    };
+    window.addEventListener("adminTabChange", onTab);
+    return () => window.removeEventListener("adminTabChange", onTab);
+  }, []);
 
-  const isActive = (href: string, tab?: string) => {
-    const isOnDashboard = pathname === "/admin" || pathname === "/admin/dashboard";
-    if (tab) {
-      if (!isOnDashboard) return false;
-      const currentTab = searchParams?.get('tab') || activeTab || 'dashboard';
-      return currentTab === tab;
+  const loadBadges = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/dashboard?summary=badges", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setBadges({
+        pendingOrders: Number(data.pendingOrders) || 0,
+        registeredCustomers: Number(data.registeredCustomers) || 0,
+        totalProducts: Number(data.totalProducts) || 0,
+      });
+    } catch {
+      /* badges are optional */
     }
-    const basePath = href.split('?')[0];
-    if (pathname === basePath) return true;
-    if (pathname.startsWith(basePath + "/")) return true;
-    return false;
+  }, []);
+
+  // Refresh badges on navigation and every minute while visible
+  useEffect(() => {
+    const t = window.setTimeout(loadBadges, 0);
+    return () => window.clearTimeout(t);
+  }, [loadBadges, pathname]);
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (document.visibilityState === "visible") loadBadges();
+    }, 60_000);
+    return () => window.clearInterval(t);
+  }, [loadBadges]);
+
+  const isActive = (item: NavItem) => {
+    if (item.tab) return onDashboard && currentTab === item.tab;
+    const base = item.href.split("?")[0];
+    return item.exact ? pathname === base : pathname === base || pathname.startsWith(base + "/");
   };
 
-  const isItemVisible = (item: SidebarItem): boolean => {
-    if (item.permission) {
-      if (!admin?.permissions) return false;
-      if (!hasPermission(admin.permissions, item.permission as Permission)) return false;
-    }
-    return true;
-  };
-
-  const handleMenuClick = () => {
-    if (isMobile) {
-      setOpenMobile(false);
-    }
-  };
+  const canSee = (item: NavItem) =>
+    !item.permission || admin?.role === "super_admin" || hasPermission(admin?.permissions, item.permission);
 
   const handleLogout = async () => {
     await logout();
-    setTimeout(() => {
-      router.push('/admin/login');
-    }, 300);
+    setTimeout(() => router.push("/admin/login"), 300);
   };
 
-  useEffect(() => {
-    let mounted = true;
-    const handleTabChange = (event: Event) => {
-      if (mounted && event instanceof CustomEvent) {
-        setActiveTab(event.detail?.tab || 'dashboard');
-      }
-    };
-    
-    window.addEventListener('adminTabChange', handleTabChange);
-    
-    (async () => {
-      try {
-        const res = await fetch('/api/admin/dashboard', { cache: 'no-store' });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!mounted) return;
-        setStats({
-          pendingInvoices: data.pendingInvoices || 0,
-          pendingOrders: (data.pendingOrders ?? data.pendingInvoices) || 0,
-          totalOrders: data.totalOrders || 0,
-          totalProducts: data.totalProducts || 0,
-          registeredCustomers: data.registeredCustomers || 0,
-        });
-      } catch (e) {
-        // ignore fail silently
-      }
-    })();
-    
-    return () => { 
-      mounted = false;
-      window.removeEventListener('adminTabChange', handleTabChange);
-    };
-  }, []);
-
-  const getBadgeValue = (key?: SidebarItem['badgeKey']) => {
-    if (!key) return null;
-    const val = stats[key];
-    if (val === undefined || val === 0) return null;
-    return val;
-  };
-
-  const isCollapsed = state === 'collapsed';
+  const activeName = NAV.flatMap((g) => g.items).find((i) => isActive(i))?.name || "Admin";
 
   return (
-    <Sidebar className={`border-r border-gray-200/80 bg-white shadow-sm transition-all duration-300 ${isCollapsed ? 'sidebar-collapsed' : 'sidebar-expanded'}`} collapsible="icon">
-      {/* Brand Header */}
-      <SidebarHeader className="border-b border-gray-100 py-3.5 px-3 bg-white">
-        <div className="flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2.5 hover:opacity-90 transition-opacity overflow-hidden" onClick={handleMenuClick}>
-            <Image
-              src="/logo/EMPI-2k24-LOGO-1.PNG"
-              alt="EMPI Logo"
-              width={100}
-              height={85}
-              className="h-9 w-auto object-contain shrink-0"
-              priority
-            />
-            {!isCollapsed && (
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold tracking-wider uppercase text-lime-700 bg-lime-50 px-1.5 py-0.5 rounded border border-lime-200/60 inline-flex items-center gap-1 w-max">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  Admin
-                </span>
-              </div>
-            )}
-          </Link>
-          <SidebarTrigger className="h-8 w-8 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-gray-900 transition-colors" />
+    <>
+      {/* Mobile top bar - the only way to open the menu on a phone */}
+      {isMobile && (
+        <div className="fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-3 border-b border-gray-200 bg-white/90 px-4 backdrop-blur-md">
+          <button
+            type="button"
+            onClick={() => setOpenMobile(!openMobile)}
+            className="-ml-1.5 rounded-lg p-1.5 text-gray-700 hover:bg-gray-100"
+            aria-label={openMobile ? "Close menu" : "Open menu"}
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+          <Image src="/logo/EMPI-2k24-LOGO-1.PNG" alt="EMPI" width={60} height={50} className="h-7 w-auto object-contain" />
+          <span className="truncate text-sm font-semibold text-gray-900">{activeName}</span>
+          {badges.pendingOrders > 0 && (
+            <Link
+              href="/admin/dashboard?tab=pending"
+              className="ml-auto rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800"
+            >
+              {badges.pendingOrders} pending
+            </Link>
+          )}
         </div>
-      </SidebarHeader>
+      )}
 
-      {/* Grouped Menu List */}
-      <SidebarContent className="px-2 py-3 space-y-4 overflow-y-auto">
-        {sidebarGroups.map((group) => {
-          const visibleItems = group.items.filter(item => isItemVisible(item));
-          if (visibleItems.length === 0) return null;
+      <Sidebar
+        collapsible="icon"
+        className={`border-r border-gray-200 bg-white text-gray-700 transition-[width] duration-200 ${
+          isMobile ? "w-72 shadow-2xl" : collapsed ? "w-[68px]" : "w-64"
+        }`}
+      >
+        {/* Brand */}
+        <SidebarHeader className={`h-16 flex-row items-center justify-between border-b border-gray-100 bg-white py-0 ${collapsed ? "px-3" : "px-4"}`}>
+          {!collapsed && (
+            <Link href="/admin/dashboard?tab=dashboard" className="flex min-w-0 items-center gap-2.5" onClick={() => isMobile && setOpenMobile(false)}>
+              <Image src="/logo/EMPI-2k24-LOGO-1.PNG" alt="EMPI Costumes" width={80} height={68} className="h-8 w-auto shrink-0 object-contain" priority />
+              <span className="flex min-w-0 flex-col leading-tight">
+                <span className="truncate text-sm font-semibold text-gray-900">EMPI Costumes</span>
+                <span className="text-[11px] font-medium text-gray-500">Admin console</span>
+              </span>
+            </Link>
+          )}
+          <button
+            type="button"
+            onClick={() => (isMobile ? setOpenMobile(false) : toggleSidebar())}
+            className={`rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 ${collapsed ? "mx-auto" : ""}`}
+            aria-label={isMobile ? "Close menu" : collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={isMobile ? "Close menu" : collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {isMobile ? <X className="h-4.5 w-4.5" /> : collapsed ? <PanelLeftOpen className="h-4.5 w-4.5" /> : <PanelLeftClose className="h-4.5 w-4.5" />}
+          </button>
+        </SidebarHeader>
 
-          return (
-            <div key={group.title} className="space-y-1">
-              {!isCollapsed && (
-                <h3 className="px-3 text-[10px] font-bold uppercase tracking-wider text-gray-400 select-none">
-                  {group.title}
-                </h3>
-              )}
-              <SidebarMenu className="space-y-0.5">
-                {visibleItems.map((item) => {
-                  const active = isActive(item.href, item.tab);
-                  const badgeVal = getBadgeValue(item.badgeKey);
-
-                  return (
-                    <SidebarMenuItem key={item.name}>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={active}
-                        className={`group relative w-full rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 flex items-center justify-between ${
-                          active
-                            ? "bg-gray-900 text-white shadow-md shadow-gray-900/10"
-                            : "text-gray-600 hover:bg-gray-100/80 hover:text-gray-900"
-                        }`}
-                      >
-                        <Link
-                          href={item.href}
-                          onClick={() => {
-                            try {
-                              if (typeof window !== 'undefined' && item.tab) {
-                                setActiveTab(item.tab);
-                                window.dispatchEvent(new CustomEvent('adminTabChange', { detail: { tab: item.tab } }));
+        {/* Navigation */}
+        <SidebarContent className={`gap-0 py-3 ${collapsed ? "px-2" : "px-3"}`}>
+          <nav aria-label="Admin" className="space-y-5">
+            {NAV.map((group, groupIndex) => {
+              const items = group.items.filter(canSee);
+              if (items.length === 0) return null;
+              return (
+                <div key={group.title}>
+                  {collapsed ? (
+                    groupIndex > 0 && <div className="mx-auto mb-2 h-px w-6 bg-gray-200" aria-hidden />
+                  ) : (
+                    <p className="mb-1.5 px-2.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-gray-400">{group.title}</p>
+                  )}
+                  <ul className="space-y-0.5">
+                    {items.map((item) => {
+                      const active = isActive(item);
+                      const Icon = item.icon;
+                      const count = item.badgeKey ? badges[item.badgeKey] : 0;
+                      return (
+                        <li key={item.name} className="relative">
+                          <Link
+                            href={item.href}
+                            aria-current={active ? "page" : undefined}
+                            title={collapsed ? `${item.name}${count ? ` (${count})` : ""}` : undefined}
+                            onClick={() => {
+                              if (item.tab) {
+                                setTabOverride({ tab: item.tab, search });
+                                window.dispatchEvent(new CustomEvent("adminTabChange", { detail: { tab: item.tab } }));
                               }
-                            } catch (e) {
-                              /* ignore */
-                            }
-                            handleMenuClick();
-                          }}
-                          title={isCollapsed ? item.name : undefined}
-                          className="flex items-center justify-between w-full"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className={`transition-colors shrink-0 ${
-                              active ? "text-lime-400" : "text-gray-400 group-hover:text-gray-700"
-                            }`}>
-                              {item.icon}
-                            </div>
-                            {!isCollapsed && (
-                              <span className="truncate text-xs font-semibold tracking-tight">{item.name}</span>
+                              if (isMobile) setOpenMobile(false);
+                            }}
+                            className={`group relative flex items-center gap-3 rounded-lg text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-lime-500 ${
+                              collapsed ? "h-10 justify-center" : "h-9 px-2.5"
+                            } ${active ? "bg-gray-100 text-gray-900" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"}`}
+                          >
+                            {active && <span className={`absolute ${collapsed ? "-left-2" : "-left-3"} top-1.5 bottom-1.5 w-[3px] rounded-r-full bg-lime-500`} aria-hidden />}
+                            <Icon className={`h-[18px] w-[18px] shrink-0 ${active ? "text-gray-900" : "text-gray-400 group-hover:text-gray-600"}`} />
+                            {!collapsed && <span className="flex-1 truncate">{item.name}</span>}
+                            {count > 0 && !collapsed && (
+                              <span
+                                className={`min-w-[22px] rounded-full px-1.5 py-0.5 text-center text-[10.5px] font-semibold tabular-nums ${
+                                  item.badgeTone === "alert" ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-500"
+                                }`}
+                              >
+                                {count > 999 ? "999+" : count}
+                              </span>
                             )}
-                          </div>
+                            {count > 0 && collapsed && item.badgeTone === "alert" && (
+                              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-white" aria-label={`${count} pending`} />
+                            )}
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })}
+          </nav>
+        </SidebarContent>
 
-                          {!isCollapsed && (
-                            <div className="flex items-center gap-1.5 ml-2">
-                              {badgeVal !== null && (
-                                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${item.badgeColor || 'bg-gray-100 text-gray-600 border-gray-200'}`}>
-                                  {badgeVal}
-                                </span>
-                              )}
-                              {active && (
-                                <ChevronRight className="h-3.5 w-3.5 text-lime-400 opacity-80" />
-                              )}
-                            </div>
-                          )}
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </div>
-          );
-        })}
-      </SidebarContent>
+        {/* Footer */}
+        <SidebarFooter className={`gap-1 border-t border-gray-100 bg-white ${collapsed ? "px-2 py-3" : "p-3"}`}>
+          <a
+            href="/"
+            target="_blank"
+            rel="noopener noreferrer"
+            title={collapsed ? "View store" : undefined}
+            className={`flex items-center gap-3 rounded-lg text-[13px] font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900 ${collapsed ? "h-10 justify-center" : "h-9 px-2.5"}`}
+          >
+            <ExternalLink className="h-[18px] w-[18px] shrink-0 text-gray-400" />
+            {!collapsed && <span>View store</span>}
+          </a>
 
-      {/* Admin Profile Footer */}
-      <SidebarFooter className="p-2.5 border-t border-gray-100 bg-white">
-        {!isCollapsed ? (
-          <div className="flex items-center justify-between p-2 rounded-xl bg-gray-50/80 border border-gray-200/80">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-lime-500 to-emerald-600 flex items-center justify-center text-black font-black text-xs shadow-sm shrink-0">
-                {(admin?.fullName || admin?.email || "A").substring(0, 2).toUpperCase()}
-              </div>
-              <div className="flex flex-col min-w-0">
-                <span className="text-xs font-bold text-gray-900 truncate">
-                  {admin?.fullName || admin?.email || "Admin"}
-                </span>
-                <span className="text-[9px] font-semibold text-lime-700 bg-lime-100/80 px-1.5 py-0.2 rounded w-max border border-lime-200/50 uppercase">
-                  {admin?.role?.replace('_', ' ') || "Super Admin"}
-                </span>
-              </div>
-            </div>
+          {collapsed ? (
             <button
               onClick={handleLogout}
-              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors shrink-0"
-              title="Logout"
+              title="Sign out"
+              aria-label="Sign out"
+              className="flex h-10 items-center justify-center rounded-lg text-gray-500 transition hover:bg-rose-50 hover:text-rose-600"
             >
-              <LogOut className="h-4 w-4" />
+              <LogOut className="h-[18px] w-[18px]" />
             </button>
-          </div>
-        ) : (
-          <button
-            onClick={handleLogout}
-            className="flex items-center justify-center w-full p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors"
-            title="Logout"
-          >
-            <LogOut className="h-4.5 w-4.5" />
-          </button>
-        )}
-      </SidebarFooter>
-    </Sidebar>
+          ) : (
+            <div className="mt-1 flex items-center gap-2.5 rounded-xl border border-gray-200 p-2">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gray-900 text-xs font-semibold text-lime-400">
+                {initials(admin?.fullName || admin?.email)}
+              </div>
+              <div className="min-w-0 flex-1 leading-tight">
+                <p className="truncate text-[13px] font-semibold text-gray-900">{admin?.fullName || admin?.email || "Admin"}</p>
+                <p className="truncate text-[11px] text-gray-500">{ROLE_LABEL[admin?.role || ""] || "Admin"}</p>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="rounded-lg p-1.5 text-gray-400 transition hover:bg-rose-50 hover:text-rose-600"
+                title="Sign out"
+                aria-label="Sign out"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+        </SidebarFooter>
+      </Sidebar>
+    </>
   );
 }

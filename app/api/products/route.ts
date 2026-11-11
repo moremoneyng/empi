@@ -1,3 +1,4 @@
+import { normalizeMaxRentQuantity } from '@/lib/rentalLimits';
 import { NextRequest, NextResponse } from 'next/server';
 import connectDB from '@/lib/mongodb';
 import Product from '@/lib/models/Product';
@@ -275,6 +276,7 @@ export async function POST(request: NextRequest) {
       availableForBuy: body.availableForBuy !== false ? true : false,
       availableForRent: body.availableForRent !== false ? true : false,
       isCostumeShow: body.isCostumeShow === true || body.isCostumeShow === 'true',
+      maxRentQuantity: normalizeMaxRentQuantity(body.maxRentQuantity),
       // Delivery metadata
       deliverySize: body.deliverySize || 'MEDIUM',
       weight: body.weight || 0.5,
